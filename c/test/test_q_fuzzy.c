@@ -104,7 +104,7 @@ static void test_fuzziness(TestCase *tc, void *data)
 
     /* test non-existing field doesn't break search */
     q = fuzq_new_conf(I("anotherfield"), "ddddX", 0.0, 10, 100);
-    top_docs = searcher_search(sea, q, 0, 1, NULL, NULL, NULL);
+    top_docs = searcher_search(sea, NULL, q, 0, 1, NULL, NULL, NULL);
     q_deref(q);
     Aiequal(0, top_docs->total_hits);
     td_destroy(top_docs);
@@ -159,7 +159,7 @@ static void test_fuzziness_long(TestCase *tc, void *data)
 
     /* "student" doesn't match anymore thanks to increased min-similarity: */
     q = fuzq_new_conf(field, "student", (float)0.6, 0, 100);
-    top_docs = searcher_search(sea, q, 0, 1, NULL, NULL, NULL);
+    top_docs = searcher_search(sea, NULL, q, 0, 1, NULL, NULL, NULL);
     q_deref(q);
     Aiequal(0, top_docs->total_hits);
     td_destroy(top_docs);

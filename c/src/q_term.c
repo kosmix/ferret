@@ -53,6 +53,12 @@ static bool tsc_next(Scorer *self)
 
     ts->pointer++;
     if (ts->pointer >= ts->pointer_max) {
+        if (self->state && self->state->is_aborted &&
+            self->state->is_aborted(self->state->is_aborted_param))
+        {
+            --ts->pointer;  /* undo partial effects of this next() call */
+            return false;
+        }
         /* refill buffer */
         ts->pointer_max = ts->tde->read(ts->tde, ts->docs, ts->freqs,
                                         TDE_READ_SIZE);
@@ -241,11 +247,10 @@ static Weight *tw_new(Query *query, Searcher *searcher)
     self->to_s      = &tw_to_s;
 
     self->similarity = query->get_similarity(query, searcher);
-    self->idf = sim_idf(self->similarity,
-                        searcher->doc_freq(searcher,
-                                           TQ(query)->field,
-                                           TQ(query)->term),
-                        searcher->max_doc(searcher)); /* compute idf */
+    self->idf = sim_idf_term(self->similarity,
+                             TQ(query)->field,
+                             TQ(query)->term,
+                             searcher);
 
     return self;
 }

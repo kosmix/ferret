@@ -1,3 +1,4 @@
+#include "except.h"
 #include "analysis.h"
 #include "hash.h"
 #include "libstemmer.h"
@@ -7,6 +8,11 @@
 #include <wchar.h>
 #include "internal.h"
 #include "scanner.h"
+#ifdef HAVE_KOSMIX_TOKEN
+#include "token/token_c.h"
+#endif
+
+#include <valgrind/memcheck.h>
 
 /****************************************************************************
  *
@@ -628,6 +634,117 @@ TokenStream *utf8_standard_tokenizer_new()
     STDTS(ts)->type = STT_UTF8;
     return ts;
 }
+
+#ifdef HAVE_KOSMIX_TOKEN
+
+/****************************************************************************
+ *
+ * Kosmix
+ *
+ ****************************************************************************/
+
+#define KOSMIXTS(token_stream) ((KosmixTokenizer *)(token_stream))
+
+/** Discourage phrase-with-slop/text-proximity matches spanning separators
+    by making each separator occupy/span many word positions in a document.
+
+    In particular, the span should be chosen to at least exceed the
+    query-length+specified-slop or text-proximity window of likely queries.
+*/
+static const int kosmix_separator_position_size = 10;
+
+/*
+ * KosmixTokenizer
+ */
+static Token *kosmix_next(TokenStream *ts)
+{
+    KosmixTokenizer *kosmix_ts = KOSMIXTS(ts);
+    Token *tk = &(CTS(ts)->token);
+
+    size_t len = transform_get(kosmix_ts->transform,
+        &tk->text[0], sizeof(tk->text));
+    VALGRIND_CHECK_MEM_IS_DEFINED(&tk->text[0], len);
+    if (len == 0)
+        return NULL;
+
+    // NB: The following field is not used and not set because KosmixTokenizer
+    // uses a transform that carries its own state:
+    // ts->t
+    // NB: The following fields are not supported, because KosmixTokenizer
+    // does not currently receive information about the character offsets at
+    // which the tokenized terms begin and end.  This information is stored
+    // only for an index with offsets enabled, and used only by Ferret's own
+    // result-summary-snippet generation code.
+    // tk->start
+    // tk->end
+    if ((tk->text[0] == '\1') && (tk->text[1] == '\0')) {
+        tk->pos_inc = kosmix_separator_position_size;
+    } else {
+        tk->pos_inc = 1;
+    }
+    tk->len     = len;
+    return &(CTS(ts)->token);
+}
+
+static TokenStream *kosmix_ts_reset(TokenStream *ts, char *text)
+{
+    KosmixTokenizer *kosmix_ts = KOSMIXTS(ts);
+    VALGRIND_CHECK_MEM_IS_DEFINED(text, strlen(text));
+    transform_setText(kosmix_ts->transform, text, strlen(text));
+
+    // Actually, ts_reset's effects are ignored; a TransformHandle maintains
+    // its own state.  It's run just so that TokenStream's now-ignored pointers
+    // don't point into oblivion (i.e., at least show what's being parsed).
+    return ts_reset(ts, text);
+}
+
+static TokenStream *kosmix_ts_clone_i(TokenStream *orig_ts)
+{
+    TokenStream *copy = ts_clone_size(orig_ts, sizeof(KosmixTokenizer));
+    // Replace the TransformHandle_t with a proper copy (so that each copy
+    // can be destroyed independently without interfering with the other).
+    KOSMIXTS(copy)->transform = transform_copy(KOSMIXTS(orig_ts)->transform);
+    return copy;
+}
+
+static void kosmix_destroy_i(TokenStream *ts)
+{
+    transform_destruct(KOSMIXTS(ts)->transform);
+
+    // Actually, the below should be whatever ts_new -> frt_ts_new_i sets as
+    // ts->destroy; it just so happens that ts_new wires ts->destroy to free.
+    free(ts);
+}
+
+static TokenStream *kosmix_ts_new()
+{
+    TokenStream *ts = ts_new(KosmixTokenizer);
+
+    ts->next        = &kosmix_next;
+    ts->reset       = &kosmix_ts_reset;
+    ts->clone_i     = &kosmix_ts_clone_i;
+    ts->destroy_i   = &kosmix_destroy_i;
+
+    return ts;
+}
+
+TokenStream *kosmix_tokenizer_new(TransformHandle_t transform)
+{
+    if(!transform) {
+        RAISE(UNSUPPORTED_ERROR, "No valid tokenizer transform provided.");
+        /* suppress warning about return value; RAISE is Ferret's own wackiness,
+           not a compiler-supported exception mechanism */
+        return NULL;
+    }
+    else{
+        TokenStream *ts = kosmix_ts_new();
+        assert(transform);
+        KOSMIXTS(ts)->transform = transform;
+        return ts;
+    }
+}
+
+#endif
 
 /****************************************************************************
  *
@@ -1571,6 +1688,18 @@ Analyzer *mb_standard_analyzer_new(bool lowercase)
     return mb_standard_analyzer_new_with_words(FULL_ENGLISH_STOP_WORDS,
                                                lowercase);
 }
+
+#ifdef HAVE_KOSMIX_TOKEN
+/****************************************************************************
+ * Kosmix
+ ****************************************************************************/
+
+Analyzer *kosmix_analyzer_new(TransformHandle_t transform)
+{
+    TokenStream *ts = kosmix_tokenizer_new(transform);
+    return analyzer_new(ts, NULL, NULL);
+}
+#endif
 
 Analyzer *utf8_standard_analyzer_new(bool lowercase)
 {

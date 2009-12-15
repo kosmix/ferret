@@ -28,9 +28,19 @@ static bool fqsc_next(Scorer *self)
 {
     Scorer *sub_sc = FQSc(self)->sub_scorer;
     BitVector *bv = FQSc(self)->bv;
+    if (self->state && self->state->is_aborted &&
+        self->state->is_aborted(self->state->is_aborted_param))
+    {
+        return false;
+    }
     while (sub_sc->next(sub_sc)) {
         self->doc = sub_sc->doc;
         if (bv_get(bv, self->doc)) return true;
+        if (self->state && self->state->is_aborted &&
+            self->state->is_aborted(self->state->is_aborted_param))
+        {
+            return false;
+        }
     }
     return false;
 }

@@ -226,7 +226,7 @@ static INLINE void index_del_doc_with_key_i(Index *self, Document *doc,
         if (!df) continue;
         bq_add_query(q, tq_new(field, df->data[0]), BC_MUST);
     }
-    td = searcher_search(self->sea, q, 0, 1, NULL, NULL, NULL);
+    td = searcher_search(self->sea, NULL, q, 0, 1, NULL, NULL, NULL);
     if (td->total_hits > 1) {
         td_destroy(td);
         RAISE(ARG_ERROR, "%s", NON_UNIQUE_KEY_ERROR_MSG);
@@ -295,7 +295,7 @@ TopDocs *index_search_str(Index *self, char *qstr, int first_doc,
     Query *query;
     TopDocs *td;
     query = index_get_query(self, qstr); /* will ensure_searcher is open */
-    td = searcher_search(self->sea, query, first_doc, num_docs,
+    td = searcher_search(self->sea, NULL, query, first_doc, num_docs,
                          filter, sort, post_filter);
     q_deref(query);
     return td;

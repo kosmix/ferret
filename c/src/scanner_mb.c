@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#define	__USE_ISOC95
 #include <wchar.h>
 #include <wctype.h>
 #include "global.h"

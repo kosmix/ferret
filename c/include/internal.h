@@ -250,6 +250,7 @@
 #define IndexSearcher           FrtIndexSearcher
 #define IndexValue              FrtIndexValue
 #define IndexWriter             FrtIndexWriter
+#define KosmixTokenizer         FrtKosmixTokenizer
 #define LazyDoc                 FrtLazyDoc
 #define LazyDocField            FrtLazyDocField
 #define LazyDocFieldData        FrtLazyDocFieldData
@@ -284,6 +285,7 @@
 #define QParser                 FrtQParser
 #define Query                   FrtQuery
 #define QueryParser             FrtQueryParser
+#define QueryState              FrtQueryState
 #define QueryType               FrtQueryType
 #define RAMFile                 FrtRAMFile
 #define RangeQuery              FrtRangeQuery
@@ -668,6 +670,7 @@
 #define iw_doc_count                                   frt_iw_doc_count
 #define iw_open                                        frt_iw_open
 #define iw_optimize                                    frt_iw_optimize
+#define kosmix_analyzer_new                            frt_kosmix_analyzer_new
 #define lazy_df_get_bytes                              frt_lazy_df_get_bytes
 #define lazy_df_get_data                               frt_lazy_df_get_data
 #define lazy_doc_close                                 frt_lazy_doc_close
@@ -855,10 +858,12 @@
 #define si_uses_compound_file                          frt_si_uses_compound_file
 #define sim_coord                                      frt_sim_coord
 #define sim_create_default                             frt_sim_create_default
+#define sim_create_flat_fields                         frt_sim_create_flat_fields
 #define sim_decode_norm                                frt_sim_decode_norm
 #define sim_destroy                                    frt_sim_destroy
 #define sim_encode_norm                                frt_sim_encode_norm
 #define sim_idf                                        frt_sim_idf
+#define sim_idf_multiterm                              frt_sim_idf_multiterm
 #define sim_idf_phrase                                 frt_sim_idf_phrase
 #define sim_idf_term                                   frt_sim_idf_term
 #define sim_length_norm                                frt_sim_length_norm

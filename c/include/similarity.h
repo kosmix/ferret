@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "symbol.h"
+#include "priorityqueue.h"
 
 typedef struct FrtSearcher FrtSearcher;
 
@@ -59,6 +60,10 @@ struct FrtSimilarity
     float (*idf_phrase)(FrtSimilarity *self, FrtSymbol field,
                         FrtPhrasePosition *positions,
                         int pp_cnt, FrtSearcher *searcher);
+    // @param boosted_terms - a PriorityQueue of BoostedTerms
+    float (*idf_multiterm)(FrtSimilarity *self, FrtSymbol field,
+                           FrtPriorityQueue *boosted_terms,
+                           FrtSearcher *searcher);
     float (*idf)(FrtSimilarity *self, int doc_freq, int num_docs);
     float (*coord)(FrtSimilarity *self, int overlap, int max_overlap);
     float (*decode_norm)(FrtSimilarity *self, unsigned char b);
@@ -74,6 +79,8 @@ struct FrtSimilarity
     msim->idf_term(msim, field, term, searcher)
 #define frt_sim_idf_phrase(msim, field, positions, pos_cnt, searcher)\
     msim->idf_phrase(msim, field, positions, pos_cnt, searcher)
+#define frt_sim_idf_multiterm(msim, field, boosted_terms, searcher)\
+    msim->idf_multiterm(msim, field, boosted_terms, searcher)
 #define frt_sim_idf(msim, doc_freq, num_docs) msim->idf(msim, doc_freq, num_docs)
 #define frt_sim_coord(msim, overlap, max_overlap) msim->coord(msim, overlap, max_overlap)
 #define frt_sim_decode_norm(msim, b) msim->decode_norm(msim, b)
@@ -81,6 +88,8 @@ struct FrtSimilarity
 #define frt_sim_destroy(msim) msim->destroy(msim)
 
 FrtSimilarity *frt_sim_create_default();
+FrtSimilarity *frt_sim_create_flat_fields(const FrtSymbol *fields,
+                                          int num_fields);
 
 #ifdef __cplusplus
 } // extern "C"

@@ -155,6 +155,7 @@ static Query *get_r_q(QParser *qp, Symbol field, char *from, char *to,
 static void qp_push_fields(QParser *self, HashSet *fields, bool destroy);
 static void qp_pop_fields(QParser *self);
 
+#define INTERNAL_BOOLEAN_DISABLES_COORD false
 /**
  * +FLDS+ calls +func+ for all fields on top of the field stack. +func+
  * must return a query. If there is more than one field on top of FieldStack
@@ -172,7 +173,7 @@ static void qp_pop_fields(QParser *self);
             q = func;\
         } else {\
             Query *volatile sq; HashSetEntry *volatile hse;\
-            q = bq_new_max(false, qp->max_clauses);\
+            q = bq_new_max(INTERNAL_BOOLEAN_DISABLES_COORD, qp->max_clauses);\
             for (hse = qp->fields->first; hse; hse = hse->next) {\
                 field = (Symbol)hse->elem;\
                 sq = func;\
@@ -892,6 +893,90 @@ static Phrase *ph_add_multi_word(Phrase *self, char *word)
 }
 
 /**
+ * Creates a PhraseQuery, and no other type.
+ */
+static Query *get_phrase_query_only(QParser *qp, Symbol field,
+                                    Phrase *phrase, char *slop_str)
+{
+    /** slop if nonnegative, encoding of phrase-scoring flags if negative */
+    int slop = 0;
+    if (slop_str) {
+        switch (slop_str[0]) {
+        case 'p':
+        case 'q':
+            slop = -1;
+            break;
+        case 'r':
+            slop = -2;
+            break;
+        case 's':
+            slop = -3;
+            break;
+        default:
+            sscanf(slop_str,"%d",&slop);
+            break;
+        }
+    }
+
+    int pos_inc = 0;
+    const int pos_cnt = phrase->size;
+    Query *q = phq_new(field);
+    if (slop > 0) {
+        ((PhraseQuery *)q)->slop = slop;
+    }
+
+    int i, j;
+    for (i = 0; i < pos_cnt; i++) {
+        char **words = phrase->positions[i].terms;
+        const int word_count = ary_size(words);
+        if (pos_inc) {
+            ((PhraseQuery *)q)->slop++;
+        }
+        pos_inc += phrase->positions[i].pos + 1; /* Actually holds pos_inc*/
+        
+        if (word_count == 1) {
+            Token *token = NULL;
+            TokenStream *stream = get_cached_ts(qp, field, words[0]);
+            while ((token = ts_next(stream))) {
+                if (token->pos_inc) {
+                    phq_add_term(q, token->text,
+                                 pos_inc ? pos_inc : token->pos_inc);
+                }
+                else {
+                    phq_append_multi_term(q, token->text);
+                    ((PhraseQuery *)q)->slop++;
+                }
+                pos_inc = 0;
+            }
+        }
+        else {
+            bool added_position = false;
+
+            for (j = 0; j < word_count; j++) {
+                Token *token = NULL;
+                TokenStream *stream = get_cached_ts(qp, field, words[j]);
+                if ((token = ts_next(stream))) {
+                    if (!added_position) {
+                        phq_add_term(q, token->text,
+                                     pos_inc ? pos_inc : token->pos_inc);
+                        added_position = true;
+                        pos_inc = 0;
+                    }
+                    else {
+                        phq_append_multi_term(q, token->text);
+                    }
+                }
+            }
+        }
+    }
+
+    if (slop < 0) {
+        ((PhraseQuery *)q)->slop = slop;
+    }
+    return q;
+}
+
+/**
  * Build a phrase query for a single field. It might seem like a better idea
  * to build the PhraseQuery once and duplicate it for each field but this
  * would be buggy in the case of PerFieldAnalyzers in which case a different
@@ -924,6 +1009,14 @@ static Query *get_phrase_query(QParser *qp, Symbol field,
 {
     const int pos_cnt = phrase->size;
     Query *q = NULL;
+
+    if (slop_str) {
+        switch (slop_str[0]) {
+        case 'p':
+            return get_phrase_query_only(qp, field, phrase, slop_str);
+            break;
+        }
+    }
 
     if (pos_cnt == 1) {
         char **words = phrase->positions[0].terms;
@@ -970,58 +1063,7 @@ static Query *get_phrase_query(QParser *qp, Symbol field,
         }
     }
     else if (pos_cnt > 1) {
-        Token *token;
-        TokenStream *stream;
-        int i, j;
-        int pos_inc = 0;
-        q = phq_new(field);
-        if (slop_str) {
-            int slop;
-            sscanf(slop_str,"%d",&slop);
-            ((PhraseQuery *)q)->slop = slop;
-        }
-
-        for (i = 0; i < pos_cnt; i++) {
-            char **words = phrase->positions[i].terms;
-            const int word_count = ary_size(words);
-            if (pos_inc) {
-                ((PhraseQuery *)q)->slop++;
-            }
-            pos_inc += phrase->positions[i].pos + 1; /* Actually holds pos_inc*/
-            
-            if (word_count == 1) {
-                stream = get_cached_ts(qp, field, words[0]);
-                while ((token = ts_next(stream))) {
-                    if (token->pos_inc) {
-                        phq_add_term(q, token->text,
-                                     pos_inc ? pos_inc : token->pos_inc);
-                    }
-                    else {
-                        phq_append_multi_term(q, token->text);
-                        ((PhraseQuery *)q)->slop++;
-                    }
-                    pos_inc = 0;
-                }
-            }
-            else {
-                bool added_position = false;
-
-                for (j = 0; j < word_count; j++) {
-                    stream = get_cached_ts(qp, field, words[j]);
-                    if ((token = ts_next(stream))) {
-                        if (!added_position) {
-                            phq_add_term(q, token->text,
-                                         pos_inc ? pos_inc : token->pos_inc);
-                            added_position = true;
-                            pos_inc = 0;
-                        }
-                        else {
-                            phq_append_multi_term(q, token->text);
-                        }
-                    }
-                }
-            }
-        }
+        q = get_phrase_query_only(qp, field, phrase, slop_str);
     }
     return q;
 }

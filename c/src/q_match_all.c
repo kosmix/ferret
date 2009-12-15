@@ -26,6 +26,11 @@ static float masc_score(Scorer *self)
 static bool masc_next(Scorer *self)
 {
     while (self->doc < (MASc(self)->max_doc - 1)) {
+        if (self->state && self->state->is_aborted &&
+            self->state->is_aborted(self->state->is_aborted_param))
+        {
+            return false;
+        }
         self->doc++;
         if (!MASc(self)->ir->is_deleted(MASc(self)->ir, self->doc)) {
             return true;

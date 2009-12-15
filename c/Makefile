@@ -44,7 +44,7 @@ q_parser.o          q_phrase.o           q_prefix.o         q_range.o         \
 q_span.o            q_term.o             q_wildcard.o       ram_store.o       \
 search.o            similarity.o         sort.o             stopwords.o       \
 store.o             term_vectors.o       field_index.o      lang.o            \
-scanner.o           scanner_mb.o         symbol.o
+scanner.o           scanner_mb.o         scanner_utf8.o     symbol.o
 
 TEST_OBJS = \
 test_multimapper.o       test_q_const_score.o     test_threading.o     \
@@ -156,7 +156,7 @@ src/q_parser.c: src/q_parser.y
 	ragel $< -o $@
 
 %.c : %.y
-	yacc -o $@ -p frt_ $<
+	bison -o $@ -p frt_ $<
 
 ###
 # Generate gcov stats

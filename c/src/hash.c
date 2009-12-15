@@ -1,7 +1,9 @@
 #include "hash.h"
 #include "global.h"
+#include "threading.h"
 #include <string.h>
 #include "internal.h"
+#include <valgrind/helgrind.h>
 
 /****************************************************************************
  *
@@ -20,6 +22,7 @@ static char *dummy_int_key = "i";
 
 static Hash *free_hts[MAX_FREE_HASH_TABLES];
 static int num_free_hts = 0;
+static mutex_t free_hts_mutex = MUTEX_INITIALIZER;
 
 unsigned long str_hash(const char *const str)
 {
@@ -165,6 +168,7 @@ HashEntry *h_lookup(Hash *self, register const void *key)
 
 Hash *h_new_str(free_ft free_key, free_ft free_value)
 {
+    mutex_lock(&free_hts_mutex);
     Hash *self;
     if (num_free_hts > 0) {
         self = free_hts[--num_free_hts];
@@ -172,6 +176,7 @@ Hash *h_new_str(free_ft free_key, free_ft free_value)
     else {
         self = ALLOC(Hash);
     }
+    mutex_unlock(&free_hts_mutex);
     self->fill = 0;
     self->size = 0;
     self->mask = HASH_MINSIZE - 1;
@@ -242,12 +247,15 @@ void h_destroy(Hash *self)
             free(self->table);
         }
 
+        mutex_lock(&free_hts_mutex);
         if (num_free_hts < MAX_FREE_HASH_TABLES) {
+            VALGRIND_HG_CLEAN_MEMORY(self, sizeof(Hash));
             free_hts[num_free_hts++] = self;
         }
         else {
             free(self);
         }
+        mutex_unlock(&free_hts_mutex);
     }
 }
 
@@ -518,7 +526,9 @@ void h_str_print_keys(Hash *self, FILE *out)
 
 void hash_finalize()
 {
+    mutex_lock(&free_hts_mutex);
     while (num_free_hts > 0) {
         free(free_hts[--num_free_hts]);
     }
+    mutex_unlock(&free_hts_mutex);
 }

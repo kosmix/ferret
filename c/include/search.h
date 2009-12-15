@@ -76,6 +76,7 @@ typedef struct FrtHit
 {
     int doc;
     float score;
+    int flags;
 } FrtHit;
 
 /***************************************************************************
@@ -621,10 +622,35 @@ extern FrtQuery *frt_spanprq_new(FrtSymbol field, const char *prefix);
     (mscorer) = NULL;\
 } while (0)
 
+/** Query-execution-specific state. */
+typedef struct FrtQueryState
+{
+    /** returns nonzero if query's results are abandoned, zero otherwise */
+    int (*is_aborted)(void *);
+    /** parameter to is_aborted function */
+    void *is_aborted_param;
+    /** flags to carry out-of-band information about currently scored doc */
+    int doc_flags;
+} FrtQueryState;
+
+enum QueryStateFlags {
+    /** no flags set */
+    FRT_QUERYSTATE_NONE = 0,
+    /** reserved for other use */
+    FRT_QUERYSTATE_RESERVED = 0x00000001,
+    /** phrase match in any field */
+    FRT_QUERYSTATE_PHRASE_MATCH = 0x00000002,
+    /** all words present in any field */
+    FRT_QUERYSTATE_ALL_TERMS = 0x00000004,
+    /** Kosmix-specific flag: phrase match in specific fields */
+    FRT_QUERYSTATE_PHRASE_MATCH_TITLE_KEYWORDS = 0x00000008,
+};
+
 struct FrtScorer
 {
     FrtSimilarity  *similarity;
     int          doc;
+    FrtQueryState *state;
     float        (*score)(FrtScorer *self);
     bool         (*next)(FrtScorer *self);
     bool         (*skip_to)(FrtScorer *self, int doc_num);
@@ -768,6 +794,24 @@ typedef struct FrtPostFilter
     void *arg;
 } FrtPostFilter;
 
+/** A real bool type.
+ *
+ *  Ferret abuses the word 'bool' as a typedef for 'unsigned int' in C, even
+ *  though C++ reserves bool as a keyword and C99 claims it in <stdbool.h> as
+ *  the conventional macro for _Bool, neither of which is an unsigned int.
+ *
+ *  Such abuse of 'bool' in Ferret code breaks C/C++ compatibility, so classes
+ *  that may be shared with code outside Ferret should use a real bool type.
+ *
+ *  @todo TODO Find better place for this typedef (config.h?) or make Ferret
+ *             use a real bool pervasively.
+ */
+#ifdef __cplusplus
+typedef bool native_bool;
+#else
+typedef _Bool native_bool;
+#endif
+
 struct FrtSearcher
 {
     FrtSimilarity  *similarity;
@@ -777,11 +821,13 @@ struct FrtSearcher
     FrtLazyDoc     *(*get_lazy_doc)(FrtSearcher *self, int doc_num);
     int          (*max_doc)(FrtSearcher *self);
     FrtWeight      *(*create_weight)(FrtSearcher *self, FrtQuery *query);
-    FrtTopDocs     *(*search)(FrtSearcher *self, FrtQuery *query, int first_doc,
+    FrtTopDocs     *(*search)(FrtSearcher *self, FrtQueryState *state,
+                           FrtQuery *query, int first_doc,
                            int num_docs, FrtFilter *filter, FrtSort *sort,
                            FrtPostFilter *post_filter,
                            bool load_fields);
-    FrtTopDocs     *(*search_w)(FrtSearcher *self, FrtWeight *weight, int first_doc,
+    FrtTopDocs     *(*search_w)(FrtSearcher *self, FrtQueryState *state,
+                             FrtWeight *weight, int first_doc,
                              int num_docs, FrtFilter *filter, FrtSort *sort,
                              FrtPostFilter *post_filter,
                              bool load_fields);
@@ -830,10 +876,10 @@ struct FrtSearcher
 #define frt_searcher_explain_w(s, q, dn)    s->explain_w(s, q, dn)
 #define frt_searcher_get_similarity(s)      s->get_similarity(s)
 #define frt_searcher_close(s)               s->close(s)
-#define frt_searcher_search(s, q, fd, nd, filt, sort, ff)\
-    s->search(s, q, fd, nd, filt, sort, ff, false)
-#define frt_searcher_search_fd(s, q, fd, nd, filt, sort, ff)\
-    s->search(s, q, fd, nd, filt, sort, ff, true)
+#define frt_searcher_search(s, state, q, fd, nd, filt, sort, ff)\
+    s->search(s, state, q, fd, nd, filt, sort, ff, false)
+#define frt_searcher_search_fd(s, state, q, fd, nd, filt, sort, ff)\
+    s->search(s, state, q, fd, nd, filt, sort, ff, true)
 #define frt_searcher_search_each(s, q, filt, ff, fn, arg)\
     s->search_each(s, q, filt, ff, fn, arg)
 #define frt_searcher_search_unscored(s, q, buf, limit, offset_docnum)\

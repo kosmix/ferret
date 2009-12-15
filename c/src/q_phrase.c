@@ -1,9 +1,16 @@
 #include <string.h>
 #include <limits.h>
+#include <math.h>
 #include "search.h"
 #include "array.h"
 #include "symbol.h"
 #include "internal.h"
+
+/* #define DEBUG_DOC (1559930) */
+#ifdef DEBUG_DOC
+static int watch_doc = DEBUG_DOC;
+static const float invalid_expl_value = -1.0;
+#endif
 
 #define PhQ(query) ((PhraseQuery *)(query))
 
@@ -46,12 +53,35 @@ typedef struct PhPos
     int offset;
     int count;
     int doc;
+    /** apparently (<real position> - offset) or (-1), not mutually exclusive
+     *  (contrary to the field's name)
+     *  @todo TODO Make position really mean position offset, for clarity and
+     *             to make the range of valid values easily identifiable. */
     int position;
+
+    /** a contiguous counter (which offset is not) */
+    int id;
+
+    /** idf is used and set by ProximityPhraseScorer only */
+    float idf;
+    /** used by ProximityPhraseScorer to accumulate value within a document */
+    float *score;
+    int score_size;
+    /** ProximityPhraseScorer: is term a stopword whose presence is irrelevant
+        to deciding whether a document is eligible for scoring? */
+    bool stop;
 } PhPos;
 
 static bool pp_next(PhPos *self)
 {
     TermDocEnum *tpe = self->tpe;
+    /* invalidate state from before pp_next call */
+    self->position = -1;
+    self->count = -1;
+    int i;
+    for (i = 0; i < self->score_size; ++i) {
+        self->score[i] = 0;
+    }
     if (!tpe->next(tpe)) {
         tpe->close(tpe);            /* close stream */
         self->tpe = NULL;
@@ -59,15 +89,18 @@ static bool pp_next(PhPos *self)
         return false;
     }
     self->doc = tpe->doc_num(tpe);
-    self->position = 0;
     return true;
 }
 
 static bool pp_skip_to(PhPos *self, int doc_num)
 {
     TermDocEnum *tpe = self->tpe;
-    if (!tpe) {
-        return false;
+    /* invalidate state from before pp_skip_to call */
+    self->position = -1;
+    self->count = -1;
+    int i;
+    for (i = 0; i < self->score_size; ++i) {
+        self->score[i] = 0;
     }
 
     if (!tpe->skip_to(tpe, doc_num)) {
@@ -77,19 +110,19 @@ static bool pp_skip_to(PhPos *self, int doc_num)
         return false;
     }
     self->doc = tpe->doc_num(tpe);
-    self->position = 0;
     return true;
 }
 
 static bool pp_next_position(PhPos *self)
 {
     TermDocEnum *tpe = self->tpe;
-    self->count--;
-    if (self->count >= 0) {         /* read subsequent pos's */
+    --self->count;
+    if (self->count > 0) {         /* read subsequent pos's */
         self->position = tpe->next_position(tpe) - self->offset;
         return true;
     }
     else {
+        self->position = -1;  /* (that's what pp_new does, but why?) */
         return false;
     }
 }
@@ -97,7 +130,7 @@ static bool pp_next_position(PhPos *self)
 static bool pp_first_position(PhPos *self)
 {
     TermDocEnum *tpe = self->tpe;
-    self->count = tpe->freq(tpe);   /* read first pos */
+    self->count = tpe->freq(tpe) + 1;
     return pp_next_position(self);
 }
 
@@ -125,6 +158,20 @@ static int pp_pos_cmp(const void *const p1, const void *const p2)
     return PP_pp(p1)->position - PP_pp(p2)->position;
 }
 
+/** comparator that pushes to the end any PhPos with no positions left */
+static int pp_pos_or_end_cmp(const void *const p1, const void *const p2)
+{
+    const int c1 = PP_pp(p1)->count, c2 = PP_pp(p2)->count;
+    const int end1 = (c1 <= 0) ? 1 : 0, end2 = (c2 <= 0) ? 1 : 0;
+    if ((end1 == 1) || (end2 == 1)) {
+        return end1 - end2;
+    } else {
+        const int real_pos1 = PP_pp(p1)->position + PP_pp(p1)->offset;
+        const int real_pos2 = PP_pp(p2)->position + PP_pp(p2)->offset;
+        return real_pos1 - real_pos2;
+    }
+}
+
 static bool pp_less_than(const PhPos *pp1, const PhPos *pp2)
 {
     if (pp1->position == pp2->position) {
@@ -140,16 +187,27 @@ static void pp_destroy(PhPos *pp)
     if (pp->tpe) {
         pp->tpe->close(pp->tpe);
     }
+    if (pp->score) {
+        assert(pp->score_size);
+        free(pp->score);
+    }
     free(pp);
 }
 
-static PhPos *pp_new(TermDocEnum *tpe, int offset)
+static PhPos *pp_new(TermDocEnum *tpe, int offset, int id)
 {
     PhPos *self = ALLOC(PhPos);
 
     self->tpe = tpe;
     self->count = self->doc = self->position = -1;
     self->offset = offset;
+    self->id = id;
+
+    /* only ProximityPhraseScorer sets/uses these fields */
+    self->idf = -1;
+    self->score = NULL;
+    self->score_size = 0;
+    self->stop = false;
 
     return self;
 }
@@ -175,6 +233,77 @@ typedef struct PhraseScorer
     bool    first_time : 1;
     bool    more : 1;
     bool    check_repeats : 1;
+
+    /** ProximityScorer: set FRT_QUERYSTATE_PHRASE_MATCH if phrase found?
+     *
+     *  Independent of scoring, ProximityScorer can set a flag
+     *  if the entire phrase occurs (in the field being scored).
+     *  Though this flag is set per scorer, all scorers set the same
+     *  FRT_QUERYSTATE_PHRASE_MATCH flag.
+     */
+    bool    set_phrase_match_flag : 1;
+    /** ProximityScorer: set FRT_QUERYSTATE_ALL_TERMS if terms present?
+     *
+     *  Independent of scoring, ProximityScorer can set a flag
+     *  if all terms occur (in the field being scored).
+     *  Though this flag is set per scorer, all scorers set the same
+     *  FRT_QUERYSTATE_ALL_TERMS flag.
+     */
+    bool    set_all_terms_flag : 1;
+    /** ProximityScorer: set FRT_QUERYSTATE_PHRASE_MATCH_TITLE_KEYWORDS?
+     *
+     *  Like set_phrase_match_flag, but determining whether to set
+     *  FRT_QUERYSTATE_PHRASE_MATCH_TITLE_KEYWORDS.  (Kosmix-specific)
+     */
+    bool    set_phrase_match_title_keywords_flag : 1;
+
+    /** ProximityScorer: apply Similarity.tf to tf for each window size?
+     *
+     *  For each term, ProximityScorer counts tf separately for one-term
+     *  matches, two-terms-in-a-proximity-window matches, and so on up to
+     *  the number of terms in the query.
+     *
+     *  Each of these separate tf counts is normalized through Similarity.tf
+     *  if this value is true.
+     */
+    bool    similarity_tf : 1;
+    /** ProximityScorer: require same order of terms as query string to score?
+     *
+     *  If true, a multi-query-term text window is scored only if the query
+     *  terms occur inside the window in the same order as they appear in
+     *  the query.
+     *  If false, a multi-query-term text window is scored regardless of the
+     *  order of the query terms occurring inside it.
+     */
+    bool    ordered_proximity : 1;
+    /** ProximityScorer: require all non-stopwords to score document?
+     *
+     *  If true, any missing non-stopword makes a document ineligible for
+     *  scoring and ranking.
+     *  If false, any present non-stopword makes a document eligible for
+     *  scoring and ranking.
+     */
+    bool    conjunctive_proximity : 1;
+    /** ProximityScorer: score stopwords at all (even in proximity windows)?
+     *
+     *  If true, stopwords are scored as they occur, as usual.
+     *  If false, stopword matches contribute no score to any document.
+     */
+    bool    score_stopwords : 1;
+    /** ProximityScorer: frequency (in orders of magnitude above rarest term)
+     *  above which a query term is considered a stopword.
+     */
+    float   stopword_gap;
+
+    /** ProximityScorer: raw score constant factor normalization
+     *  (black-box factor by which tf.idf score is scaled)
+     */
+    float   raw_score_norm_factor;
+    /** ProximityScorer: raw score per-term factor normalization
+     *  (black-box factor by which tf.idf score is reduced for each query term)
+     */
+    float   raw_score_term_factor;
+
 } PhraseScorer;
 
 static void phsc_init(PhraseScorer *phsc)
@@ -202,6 +331,11 @@ static bool phsc_do_next(Scorer *self)
     PhPos *last  = phrase_positions[PREV_NUM(pp_first_idx, pp_cnt)];
 
     while (phsc->more) {
+        if (self->state && self->state->is_aborted &&
+            self->state->is_aborted(self->state->is_aborted_param))
+        {
+            break;
+        }
         /* find doc with all the terms */
         while (phsc->more && first->doc < last->doc) {
             /* skip first upto last */
@@ -251,6 +385,10 @@ static bool phsc_next(Scorer *self)
     if (phsc->first_time) {
         phsc_init(phsc);
         phsc->first_time = false;
+    }
+    else if (self->state && self->state->is_aborted &&
+             self->state->is_aborted(self->state->is_aborted_param)) {
+        return false;
     }
     else if (phsc->more) {
         /* trigger further scanning */
@@ -302,6 +440,27 @@ static void phsc_destroy(Scorer *self)
     scorer_destroy_i(self);
 }
 
+static bool phsc_check_repeats_flag(PhrasePosition *positions, int pos_cnt)
+{
+    HashSet *term_set = hs_new_str((free_ft)NULL);
+    bool check_repeats = false;
+    int i;
+    for (i = 0; i < pos_cnt; i++) {
+        /* check for repeats */
+        char **terms = positions[i].terms;
+        const int t_cnt = ary_size(terms);
+        int j;
+        for (j = 0; j < t_cnt; j++) {
+            if (hs_add(term_set, terms[j])) {
+                check_repeats = true;
+                break;
+            }
+        }
+    }
+    hs_destroy(term_set);
+    return check_repeats;
+}
+
 static Scorer *phsc_new(Weight *weight,
                         TermDocEnum **term_pos_enum,
                         PhrasePosition *positions, int pos_cnt,
@@ -311,8 +470,6 @@ static Scorer *phsc_new(Weight *weight,
 {
     int i;
     Scorer *self                = scorer_new(PhraseScorer, similarity);
-    HashSet *term_set           = NULL;
-
 
     PhSc(self)->weight          = weight;
     PhSc(self)->norms           = norms;
@@ -323,30 +480,14 @@ static Scorer *phsc_new(Weight *weight,
     PhSc(self)->slop            = slop;
     PhSc(self)->first_time      = true;
     PhSc(self)->more            = true;
-    PhSc(self)->check_repeats   = false;
-    
     if (slop) {
-        term_set = hs_new_str((free_ft)NULL);
+        PhSc(self)->check_repeats = phsc_check_repeats_flag(positions, pos_cnt);
+    } else {
+        PhSc(self)->check_repeats = false;
     }
     for (i = 0; i < pos_cnt; i++) {
-        /* check for repeats */
-        if (slop && !PhSc(self)->check_repeats) {
-            char **terms = positions[i].terms;
-            const int t_cnt = ary_size(terms);
-            int j;
-            for (j = 0; j < t_cnt; j++) {
-                if (hs_add(term_set, terms[j])) {
-                    PhSc(self)->check_repeats = true;
-                    goto repeat_check_done;
-                }
-            }
-        }
-repeat_check_done:
-        PhSc(self)->phrase_pos[i] = pp_new(term_pos_enum[i], positions[i].pos);
-    }
-
-    if (slop) {
-        hs_destroy(term_set);
+        PhSc(self)->phrase_pos[i] = pp_new(term_pos_enum[i], positions[i].pos,
+            i);
     }
 
     self->score     = &phsc_score;
@@ -472,7 +613,7 @@ static float sphsc_phrase_freq(Scorer *self)
         res = pp_first_position(pp);
         assert(res);(void)res;
         if (check_repeats && i > 0) {
-            if (!sphsc_check_repeats(pp, phsc->phrase_pos, i - 1)) {
+            if (!sphsc_check_repeats(pp, phsc->phrase_pos, i)) {
                 goto return_freq;
             }
         }
@@ -534,6 +675,690 @@ static Scorer *sloppy_phrase_scorer_new(Weight *weight,
 }
 
 /***************************************************************************
+ * ProximityPhraseScorer
+ ***************************************************************************/
+
+/* Unlike other PhraseScorers, this one does not require all terms in the
+   phrase to occur for a document to match and be scored.  Consequently,
+   all loop-initialization and traversal code has to be replaced so that
+   it does not short-circuit as soon as any term runs out of occurrences
+   in a document.
+
+   PhraseScorer.pp_first_idx is unused in ProximityPhraseScorer, because
+   there's no corresponding pphsc_phrase_freq in use.
+   PhraseScorer.phrase_freq is set only to avoid the awkward scenario
+   of a "virtual method" (reinvented) being NULL; it is not used.
+ */
+
+static bool pphsc_skip_to(Scorer *self, int doc_num)
+{
+    PhraseScorer *phsc = PhSc(self);
+    const int pp_cnt = phsc->pp_cnt;
+    PhPos **phrase_positions = phsc->phrase_pos;
+    bool more = phsc->more, done = false;
+
+    int nonstop_required = 0, i;
+    if (phsc->conjunctive_proximity) {
+        /* Require all nonstopwords to appear */
+        for (i = 0; i < pp_cnt; ++i) {
+            if (!phrase_positions[i]->stop) {
+                ++nonstop_required;
+            }
+        }
+    } else {
+        /* Require any nonstopword to appear */
+        nonstop_required = pp_cnt ? 1 : 0;
+    }
+    assert((pp_cnt > 0) == (nonstop_required > 0));
+
+    while (!done && more) {
+        /** smallest document number > doc_num with one or more nonstopwords */
+        int next_doc = INT_MAX;
+        /** number of nonstopwords found in document number doc_num */
+        int nonstop_present = 0;
+        more = false;
+        for (i = 0; i < pp_cnt; ++i) {
+#ifdef DEBUG_DOC
+            if (doc_num == DEBUG_DOC) {
+                fprintf(stderr, "checking term %d in doc_num %d\n", i, doc_num);
+            }
+#endif
+            if (phrase_positions[i]->tpe != NULL) {
+                pp_skip_to(phrase_positions[i], doc_num);
+            }
+            if (phrase_positions[i]->tpe != NULL) {
+                /* At least more of this term is still available. */
+                more = true;
+                const int pp_doc = phrase_positions[i]->doc;
+                assert(pp_doc >= doc_num);
+                if (!phrase_positions[i]->stop && (pp_doc == doc_num)) {
+                    ++nonstop_present;
+                    if (nonstop_present >= nonstop_required) {
+                        done = true;
+                    }
+                }
+
+                if ((pp_doc < next_doc) && (pp_doc > doc_num)) {
+                    next_doc = pp_doc;
+                }
+            }
+        }
+        if (!done && more) {
+            assert((next_doc > doc_num) || (doc_num == INT_MAX));
+            if (next_doc == INT_MAX) {
+                ++doc_num;
+            } else {
+                doc_num = next_doc;
+            }
+        }
+    }
+    if (more) {
+        qsort(phsc->phrase_pos, phsc->pp_cnt, sizeof(PhPos *), &pp_cmp);
+    }
+    assert((phsc->pp_first_idx == 0) && "pp_first_idx is unused and untouched");
+    self->doc = phsc->phrase_pos[phsc->pp_first_idx]->doc;
+    phsc->more = more;
+    return phsc->more;
+}
+
+/* Initialize phsc->phrase_pos fields to first match for each term.
+   (If doc has a known minimum value, this function can be replaced
+    by a simpler skip_to call.) */
+static bool pphsc_init(Scorer *self)
+{
+    PhraseScorer *phsc = PhSc(self);
+    bool more = false;
+    int i;
+    int min_doc = INT_MAX;
+    for (i = 0 ; i < phsc->pp_cnt; ++i) {
+        if (pp_next(phsc->phrase_pos[i])) {
+            more = true;
+            if (phsc->phrase_pos[i]->doc < min_doc) {
+                min_doc = phsc->phrase_pos[i]->doc;
+            }
+        }
+    }
+    if (more) {
+        phsc->pp_first_idx = 0;
+        return pphsc_skip_to(self, min_doc);
+    } else {
+        return false;
+    }
+}
+
+static bool pphsc_next(Scorer *self)
+{
+    PhraseScorer *phsc = PhSc(self);
+    if (phsc->first_time) {
+        phsc->first_time = false;
+        phsc->more = pphsc_init(self);    
+    } else if (self->state && self->state->is_aborted &&
+               self->state->is_aborted(self->state->is_aborted_param)) {
+        return false;
+    } else {
+        phsc->more = pphsc_skip_to(self, self->doc + 1);
+    }
+    return phsc->more;
+}
+
+/** return the number of terms that occur in the active document
+ *
+ *  Precondition: phsc->phrase_pos must already be sorted in
+ *                phsc->phrase_pos[i]->doc order, so that the
+ *                terms that occur are listed first
+ */
+static int pphsc_terms_in_doc(PhraseScorer *phsc)
+{
+    /** The terms that appear in this document (<= pp_cnt). */
+    int pp_in_doc = phsc->pp_cnt;
+    int i;
+    for (i = 0; i < phsc->pp_cnt; ++i) {
+        if (phsc->phrase_pos[i]->doc > phsc->super.doc) {
+            pp_in_doc = i;
+            break;
+        }
+    }
+    /* ordering should have been guaranteed by each next/skip_to's qsort */
+    for ( ; i < phsc->pp_cnt; ++i) {
+        assert((phsc->phrase_pos[i]->doc > phsc->super.doc) &&
+            "Term with earlier doc appears later in phsc->phrase_pos array");
+    }
+    /* at least one term should have been found in this document for us to be here */
+    assert((pp_in_doc != 0) && "phsc->doc has no query terms to score");
+
+    return pp_in_doc;
+}
+
+/** like sphsc_check_repeats, but ignores out-of-occurrences terms
+ *
+ *  @todo TODO Supersede sphsc_check_repeats?
+ */
+static bool pphsc_check_repeats(PhPos *pp,
+                                PhPos **positions,
+                                const int p_cnt)
+{
+    assert(pp->count && "Position to check for repetition must exist");
+    int j;
+    for (j = 0; j < p_cnt; j++) {
+        PhPos *ppj = positions[j];
+        /* A nonexistent position cannot be a repetition of any term. */
+        if (ppj->count == 0) {
+            continue;
+        }
+        /* If offsets are equal, either we are at the current PhPos +pp+ or
+         * +pp+ and +ppj+ are supposed to match in the same position in which
+         * case we don't need to check. */
+        if (ppj->offset == pp->offset) {
+            continue;
+        }
+        /* the two phrase positions are matching on the same term
+         * which we want to avoid */
+        if ((ppj->position + ppj->offset) == (pp->position + pp->offset)) {
+            if (!pp_next_position(pp)) {
+                /* We have no matches left for this document */
+                return false;
+            }
+            /* we changed the position so we need to start check again */
+            j = -1;
+        }
+    }
+    return true;
+}
+
+/* The (largest) size of the text window in which proximity is considered:
+ *     window_size_{number_of_terms} =
+ *         window_size_base + (number_of_terms)*window_size_per_term
+ */
+static const int window_size_base = 1, window_size_per_term = 1;
+
+/* If one or more terms occur in a text window, the score of the
+ * text occurrences in the window is a "magic" formula replacing
+ * the straight tf.idf product of a term/phrase.
+ *
+ * The formula simply sums for each document, at each term occurrence
+ * in the document:
+ *  s(1) *    (idf of occurring term)
+ *  s(2) * sum(idf of first two occurring terms, if in window_size_{2 terms})
+ *  s(3) * sum(idf of first three occurring terms, if in window_size_{3 terms})
+ *       :
+ * where s(n) = base_tf_score * tf_scale^n, for (presumably) tf_scale > 1.
+ *
+ * Optionally, each tf component of the above formula may be fed through
+ * Similarity's tf normalization before being multiplied by the respective idf.
+ * To implement Similarity.tf, count the one-term-window occurrences of each
+ * term separately from the two-term-window occurrences of the term, and so on.
+ * (Feed each n-term-window count through Similarity.tf separately.)
+ *
+ * Because of the way the scoring loop identifies text windows
+ * (advancing the position pointer of one term, then scoring again),
+ * all n-term sequences occurring within window_size_{n terms} are
+ * scored exactly once.  (Proof: Each sequence's first word is the
+ * earliest position pointer in exactly one iteration of the loop.)
+ *
+ * As consequences of this current scoring formula:
+ *
+ * * Terms that never occur in a proximity window end up scored as
+ *   sum(idf) == tf.idf.  (Ferret and Lucene seem to use idf^2 for
+ *   text scoring, but the squaring does not seem helpful.)  Hence,
+ *   the degenerate case of no-proximal-text is scored as expected.
+ *
+ * * Terms that do occur in nontrivial text-proximity windows have
+ *   a total score that must exceed the same terms occurring with
+ *   same frequency in only trivial (one-word) proximity windows;
+ *   because the former score includes the latter sum.
+ *
+ * * Ordering of terms in a document, relative to their ordering in
+ *   a query, is ignored.  I have not found any references that
+ *   encourage ordering-sensitive proximity scoring for relevance;
+ *   in fact, users may commonly write query terms in "incorrect" order.
+ *
+ * * Longer documents are favored, because the effective tf is not
+ *   scaled directly to the length of the document.  This behavior is
+ *   contrary to the text scoring in Ferret and Lucene, which use
+ *   sqrt(tf) to reduce the effect of high tf in longer documents.
+ *
+ *   Actually, Ferret and Lucene use sqrt(tf) * 1/sqrt(L) [length norm],
+ *   but this proximity formula leads to tf * 1/sqrt(L) [length norm].
+ *   This formula, then, is vulnerable to query-term repetition in a
+ *   document; Ferret and Lucene normalize away this effect.
+ */
+
+static const float base_tf_score = 0.1, tf_scale = 10;
+
+/** Collect the number of occurrences of each term that should be included
+    in the sum-of-idfs formula.
+
+    Note that this function defines local position variables that represent
+    *real* positions, not the fake (position-offset) misnomers used in
+    original Ferret code.  The ordering of the words in the query are ignored,
+    so the sliding window walk is sorted by true position for all query terms.
+
+    @param explanation - NULL if no explanation detail desired
+ */
+static void pphsc_textscore_tf(Scorer *self, Explanation *explanation)
+{
+    PhraseScorer *phsc = PhSc(self);
+    const int pp_in_doc = pphsc_terms_in_doc(phsc);
+    PhPos **phrase_positions = phsc->phrase_pos;
+    const bool check_repeats = phsc->check_repeats;
+    assert((pp_in_doc > 0) && "At least one term must be in scored document");
+    if (phsc->set_all_terms_flag && (pp_in_doc == phsc->pp_cnt)) {
+        if (self->state) {
+            self->state->doc_flags |= FRT_QUERYSTATE_ALL_TERMS;
+        }
+    }
+
+    int i;
+    for (i = 0; i < pp_in_doc; i++) {
+        PhPos *pp = phsc->phrase_pos[i];
+        assert(pp->doc == self->doc);
+        /* we should always have at least one position or this function
+         * shouldn't have been called. */
+        if (!pp_first_position(pp)) {
+            assert(0 && "Term occurring in document should have some position");
+        }
+        if (check_repeats && (i > 0)) {
+            pphsc_check_repeats(pp, phsc->phrase_pos, i);
+        }
+        assert(pp->score_size == phsc->pp_cnt);
+        int j;
+        for (j = 0; j < phsc->pp_cnt; ++j) {
+            assert(pp->score[j] == 0);
+        }
+    }
+
+    for ( ; i < phsc->pp_cnt; ++i) {
+        assert((phrase_positions[i]->doc != self->doc) &&
+            "Ignored terms for document must not exist on document");
+        assert(phrase_positions[i]->score_size == phsc->pp_cnt);
+        int j;
+        for (j = 0; j < phsc->pp_cnt; ++j) {
+            assert(phrase_positions[i]->score[j] == 0);
+        }
+    }
+    qsort(phrase_positions, pp_in_doc, sizeof(PhPos *), &pp_pos_or_end_cmp);
+
+#ifdef DEBUG_DOC
+    if (!explanation && (self->doc == watch_doc)) {
+        explanation = expl_new(invalid_expl_value, "query execution");
+    }
+#endif
+
+    /** [phsc->pp_cnt*i + j]: tf for word (id i) in windows with j+1 terms */
+    Explanation **window_explanations = NULL;
+    if (explanation) {
+        const int window_explanations_size = phsc->pp_cnt * phsc->pp_cnt;
+        window_explanations = ALLOC_N(Explanation *, window_explanations_size);
+        int i;
+        for (i = 0; i < window_explanations_size; ++i) {
+            window_explanations[i] = NULL;
+        }
+
+        for (i = 0; i < phsc->pp_cnt; ++i) {
+            const PhPos *ppi = phrase_positions[i];
+            int window_size;
+            for (window_size = 1; window_size <= phsc->pp_cnt; ++window_size) {
+                const int term_ord = ppi->offset + 1;
+                /* score for explanation to be filled in at end */
+                Explanation *e = expl_new(0.0,
+                    "tf for term #%d (idf=%f) in text windows with %d term%s",
+                    term_ord, ppi->idf, window_size,
+                    (window_size == 1) ? "" : "s");
+                const size_t offset = phsc->pp_cnt * ppi->id + (window_size-1);
+                assert(offset < (size_t)window_explanations_size);
+                assert(window_explanations[offset] == NULL);
+                window_explanations[offset] = e;
+            }
+        }
+        for (i = 0; i < window_explanations_size; ++i) {
+            assert(window_explanations[i]);
+        }
+    }
+
+    int pp_left = pp_in_doc;
+    while (phrase_positions[0]->count) {
+        PhPos *pp = phrase_positions[0];
+        const int start_pos = pp->position + pp->offset;
+        int window_size = window_size_base;
+        /** Is the match so far [start_pos, ppi] a prefix of the query terms
+         *  in query order? */
+        bool phrase_prefix = true;
+        for (i = 0; i < pp_left; ++i) {
+            PhPos *ppi = phrase_positions[i];
+            if (ppi->count == 0) {
+                int j;
+                for (j = i; j < pp_in_doc; ++j) {
+                    assert((phrase_positions[j]->count == 0) &&
+                        "phrase_positions ordering must leave terms with "
+                        "no occurrences left at end of array");
+                    assert((phrase_positions[j]->position == -1) &&
+                        "phrase_positions ordering must leave terms with "
+                        "no occurrences left at end of array");
+                }
+                pp_left = i;
+                break;
+            } else {
+                assert(ppi->tpe != NULL);
+                assert(ppi->position + ppi->offset >= start_pos);
+            }
+
+            /* Check whether term i is consistent with a phrase match. */
+            const int pos = ppi->position + ppi->offset;
+            if ((ppi->id != i) || (pos != start_pos + i)) {
+                phrase_prefix = false;
+            }
+
+            /* If ordering is broken, stop checking for longer text windows.
+               @todo TODO Another version could step over out-of-order terms
+               as if the out-of-order term were not a match. */
+            if (phsc->ordered_proximity) {
+                const int last_offset = i ? phrase_positions[i-1]->offset :
+                    pp->offset; 
+                if (ppi->offset < last_offset)
+                    break;
+            }
+
+            /* PhPos.position is a position-offset value, not a position,
+               so window_size needs to be adjusted by the sums of the offsets
+               for any text-window-size check to work. */
+            window_size += window_size_per_term;
+            assert((i == 0) || (pos > start_pos));
+            if (pos - start_pos + 1 <= window_size) {
+                int j = 0;
+                for (j = 0; j <= i; ++j) {
+                    /* just accumulate tf component now */
+                    /* idf multiply happens in pphsc_score */
+                    if (phsc->score_stopwords || !ppi->stop) {
+                        ++phrase_positions[j]->score[i];
+                    }
+                }
+                if (explanation) {
+                    for (j = 0; j <= i; ++j) {
+                        PhPos *ppj = phrase_positions[j];
+                        if (phsc->score_stopwords || !ppi->stop) {
+                            const int term_pos = ppj->position + ppj->offset;
+                            Explanation *w = expl_new(1.0,
+                                "text window [%d, %d] (size %d <= %d) "
+                                "includes [%d]",
+                                start_pos, pos,
+                                pos - start_pos + 1, window_size,
+                                term_pos);
+
+                            const size_t offset = phsc->pp_cnt * ppj->id + i;
+                            expl_add_detail(window_explanations[offset], w);
+                        }
+                    }
+                }
+            }
+        }
+        /* check whether a full phrase match occurred */
+        if (phrase_prefix && (i == phsc->pp_cnt)) {
+            if (phsc->set_phrase_match_flag && self->state) {
+                self->state->doc_flags |= FRT_QUERYSTATE_PHRASE_MATCH;
+            }
+            if (phsc->set_phrase_match_title_keywords_flag && self->state) {
+                self->state->doc_flags |=
+                    FRT_QUERYSTATE_PHRASE_MATCH_TITLE_KEYWORDS;
+            }
+        }
+
+        assert(pp->count > 0);
+        if (pp_next_position(pp) && check_repeats) {
+            pphsc_check_repeats(pp, phsc->phrase_pos, pp_left);
+        }
+        qsort(phrase_positions, pp_left, sizeof(PhPos *), &pp_pos_or_end_cmp);
+    }
+
+    /* Normalize [Similarity.tf], scale [tf_scale] tf values as appropriate. */
+    float tf_window_factor = base_tf_score;
+    for (i = 0; i < phsc->pp_cnt; ++i) {
+        tf_window_factor *= tf_scale;
+        int j;
+        for (j = 0; j < phsc->pp_cnt; ++j) {
+            PhPos *ppj = phsc->phrase_pos[j];
+            float tf = ppj->score[i];
+            if (phsc->similarity_tf) {
+                /* Similarity.tf goes here, if desired: */
+                tf = self->similarity->tf(self->similarity, tf);
+            }
+            tf *= tf_window_factor;
+            ppj->score[i] = tf;
+        }
+    }
+ 
+#ifdef DEBUG_DOC
+    float raw_score = 0;
+#endif
+    if (explanation) {
+        float score_increment = base_tf_score;
+        int window_size, j;
+        for (window_size = 1; window_size <= phsc->pp_cnt; ++window_size) {
+            score_increment *= tf_scale;
+            for (j = 0; j < phsc->pp_cnt; ++j) {
+                const PhPos *ppj = phsc->phrase_pos[j];
+                const size_t offset = phsc->pp_cnt * ppj->id + (window_size-1);
+                window_explanations[offset]->value = ppj->score[window_size-1];
+#ifdef DEBUG_DOC
+                raw_score += ppj->score[window_size-1] * ppj->idf;
+#endif
+            }
+        }
+        for (window_size = phsc->pp_cnt; window_size > 0; --window_size) {
+            for (j = 0; j < phsc->pp_cnt; ++j) {
+                const size_t offset = phsc->pp_cnt * j + (window_size-1);
+                Explanation *e = window_explanations[offset];
+                if (e->value) {
+                    expl_add_detail(explanation, e);
+                } else {
+                    expl_destroy(e);
+                }
+            }
+        }
+        free(window_explanations);
+        window_explanations = NULL;
+    }
+
+#ifdef DEBUG_DOC
+    if ((self->doc == watch_doc) && (explanation->value == invalid_expl_value))
+    {
+        explanation->value = raw_score;
+
+        char *s = expl_to_s_depth(explanation, 0);
+        printf("%s", s);
+        expl_destroy(explanation);
+        explanation = NULL;
+    }
+#endif
+
+    return;
+}
+
+/** Fold pphsc_textscore_tf's values in with Ferret's other parameters.
+ *
+ *  @param explanation - NULL if no explanation value/detail desired
+ */
+static float pphsc_score(Scorer *self, Explanation *explanation)
+{
+    PhraseScorer *phsc = PhSc(self);
+    pphsc_textscore_tf(self, explanation);
+    float raw_score = 0;
+    int i, j;
+    for (i = 0; i < phsc->pp_cnt; ++i) {
+        for (j = 0; j < phsc->pp_cnt; ++j) {
+            float tf = phsc->phrase_pos[j]->score[i];
+            assert((phsc->phrase_pos[j]->idf > 0) &&
+                "valid idf not set for term");
+            raw_score += tf * phsc->phrase_pos[j]->idf;
+        }
+    }
+    /* @todo TODO Provide a real/modelled score normalization. */
+    raw_score *= phsc->raw_score_norm_factor *
+        powf(phsc->raw_score_term_factor, phsc->pp_cnt);
+
+    if (explanation) {
+        /* For consistency with other Explanations, omit normalization
+           values from this Explanation's reported value. */
+        explanation->value = raw_score;
+    }
+    /* normalize */
+    return raw_score * phsc->value * sim_decode_norm(
+        self->similarity,
+        phsc->norms[self->doc]);
+}
+
+static float pphsc_score_wrapper(Scorer *self)
+{
+    return pphsc_score(self, NULL);
+}
+
+static Explanation *pphsc_explain(Scorer *self, int doc_num)
+{
+    pphsc_skip_to(self, doc_num);
+    if (self->doc == doc_num) {
+        Explanation *e = expl_new(0, "total of termwise tf.idf scores");
+        pphsc_score(self, e);
+        return e;
+    } else {
+        Explanation *e = expl_new(0, "no words detected");
+        return e;
+    }
+}
+
+/* Examine query's terms to determine which ones are really required to appear
+ * in a document for the document to be relevant to the query at all.
+ *
+ * By automatically marking only the more selective terms as required, we can
+ * avoid scoring documents with only occurrences of disproportionately popular
+ * words (e.g., stopwords), documents which are unlikely to be relevant to the
+ * query anyway.  By making the determination at query time rather than at
+ * indexing time, we can decide the status of the same term differently
+ * depending on the query in which it resides.
+ *
+ * By imposing this requirement as an automatic stopword mechanism, we
+ * * avoid generating corpus-specific stopword lists (e.g., as Cohen et al.
+ *   did for Lucene in the TREC 2007 1MQ track);
+ * * allow "to be or not to be"~p to run and get proximity scoring "as usual"
+ *   because optional words need not be removed entirely from the query; and
+ * * allow recall/performance tuning (the fewer documents qualify for scoring,
+ *   the more quickly a search completes).
+ *
+ * For one approach to this computation, observe that Lucene (and Ferret)
+ * compute idf(<term>) as [see Similarity::idf]
+ *
+ * 	1 + log( <documents in corpus> / (1 + <documents with term>) )
+ *
+ * which is approximately <constant> - log( <fraction of documents with term> ).
+ */
+/** Set phrase_pos[0 .. (pp_cnt-1)].stop flags automatically for query.
+ *
+ *  @param stopword_gap - hint how many orders of magnitude more frequent
+ *                        stopwords are than rare terms (e.g., 0.6-2.0)
+ */
+static void proximity_phrase_stopword_selection(PhPos **phrase_pos, int pp_cnt,
+    float stopword_gap)
+{
+    const float magnitude = logf(10);
+    float max_idf = 0;
+    int i;
+    for (i = 0; i < pp_cnt; ++i) {
+        phrase_pos[i]->stop = false;
+        if (phrase_pos[i]->idf > max_idf) {
+            max_idf = phrase_pos[i]->idf;
+        }
+    }
+
+    const float min_idf_cutoff = max_idf - (stopword_gap * magnitude);
+    for (i = 0; i < pp_cnt; ++i) {
+        /* if word is stopword_gap orders of magnitude more frequent than
+           rarest word */
+        if (phrase_pos[i]->idf < min_idf_cutoff) {
+            phrase_pos[i]->stop = true;
+        }
+    }
+}
+
+static Scorer *proximity_phrase_scorer_new(Weight *weight,
+                                           TermDocEnum **term_pos_enum,
+                                           PhrasePosition *positions, int pp_cnt,
+                                           Similarity *similarity, uchar *norms,
+                                           float *idf, int scoring_function)
+{
+    Scorer *self = phsc_new(weight,
+                            term_pos_enum,
+                            positions,
+                            pp_cnt,
+                            similarity,
+                            norms,
+                            0);
+
+    /* set results flags for all fields */
+    PhSc(self)->set_phrase_match_flag = true;
+    PhSc(self)->set_all_terms_flag    = true;
+    PhSc(self)->set_phrase_match_title_keywords_flag = false;
+    /* Kosmix-specific behavior: set flags for certain hardwired fields */
+    {
+        PhraseQuery *q = PhQ(weight->query);
+        if ((q->field == intern("title")) || (q->field == intern("keywords"))) {
+            PhSc(self)->set_phrase_match_title_keywords_flag = true;
+        }
+    }
+
+    /* set some default magic values */
+    PhSc(self)->similarity_tf = false;
+    PhSc(self)->ordered_proximity = false;
+    PhSc(self)->conjunctive_proximity = false;
+    PhSc(self)->score_stopwords = true;
+    /** a stopword is any word 2+ orders of magnitude more frequent than the
+        rarest term in the query */
+    PhSc(self)->stopword_gap = 2.0;
+
+#if 0
+    PhSc(self)->raw_score_norm_factor = 1.0/6.0;
+    PhSc(self)->raw_score_term_factor = 1.0/tf_scale;
+#endif
+    PhSc(self)->raw_score_norm_factor = 1.0;
+    PhSc(self)->raw_score_term_factor = 1.0;
+
+    switch (scoring_function) {
+    case -2:
+        PhSc(self)->similarity_tf = true;
+        PhSc(self)->stopword_gap = 1.0;
+        break;
+    case -3:
+        PhSc(self)->similarity_tf = true;
+        PhSc(self)->conjunctive_proximity = true;
+        break;
+    case -1:
+    default:
+        break;
+    };
+
+    int i;
+    for (i = 0; i < pp_cnt; ++i) {
+        PhSc(self)->phrase_pos[i]->idf = idf[i];
+        PhSc(self)->phrase_pos[i]->stop = false;
+        PhSc(self)->phrase_pos[i]->score = ALLOC_N(float, pp_cnt);
+        PhSc(self)->phrase_pos[i]->score_size = pp_cnt;
+    }
+    /* Set PhSc(self)->phrase_pos[i]->stop flags. */
+    proximity_phrase_stopword_selection(PhSc(self)->phrase_pos, pp_cnt,
+        PhSc(self)->stopword_gap);
+
+    PhSc(self)->check_repeats = phsc_check_repeats_flag(positions, pp_cnt);
+
+    self->score       = &pphsc_score_wrapper;
+    self->next        = &pphsc_next;
+    self->skip_to     = &pphsc_skip_to;
+    self->explain     = &pphsc_explain;
+
+    /* Proximity scoring does not use phrase_freq; one is installed here only
+     * because the value (number of occurrences of all words in a window)
+     * is still well-defined, not because it is still useful here. */
+    PhSc(self)->phrase_freq = &sphsc_phrase_freq;
+    return self;
+}
+
+/***************************************************************************
  *
  * PhraseWeight
  *
@@ -544,37 +1369,66 @@ static char *phw_to_s(Weight *self)
     return strfmt("PhraseWeight(%f)", self->value);
 }
 
+static bool phw_is_proximity_search(PhraseQuery *self)
+{
+    /* See q_parser.y:get_phrase_q for slop-value settings. */
+    return (self->slop < 0);
+}
+
 static Scorer *phw_scorer(Weight *self, IndexReader *ir)
 {
     int i;
     Scorer *phsc = NULL;
     PhraseQuery *phq = PhQ(self->query);
     TermDocEnum **tps, *tpe;
+    float *idf;
     PhrasePosition *positions = phq->positions;
     const int pos_cnt = phq->pos_cnt;
     const int field_num = fis_get_field_num(ir->fis, phq->field);
+    /* See q_parser.y:get_phrase_q for slop-value settings (overload). */
+    const int scoring_function = phq->slop;
+    const bool fixed_idf_field = false;
 
     if (pos_cnt == 0 || field_num < 0) {
         return NULL;
     }
 
     tps = ALLOC_N(TermDocEnum *, pos_cnt);
+    /** idf[i] == Similarity-munged idf for term i */
+    idf = ALLOC_N(float, pos_cnt);
 
     for (i = 0; i < pos_cnt; i++) {
         char **terms = positions[i].terms;
         const int t_cnt = ary_size(terms);
+        int idf_field_num = field_num;
+        if (phw_is_proximity_search(phq) && fixed_idf_field) {
+            idf_field_num = fis_get_field_num(ir->fis, intern("content"));
+        }
         if (t_cnt == 1) {
             tpe = tps[i] = ir->term_positions(ir);
             tpe->seek(tpe, field_num, terms[0]);
+            idf[i] = ir->doc_freq(ir, idf_field_num, terms[0]);
         }
         else {
             tps[i] = mtdpe_new(ir, field_num, terms, t_cnt);
+            idf[i] = 0;
+            int j;
+            for (j = 0; j < t_cnt; ++j) {
+                idf[i] += ir->doc_freq(ir, idf_field_num, terms[j]);
+            }
         }
         /* neither mtdpe_new nor ir->term_positions should return NULL */
         assert(NULL != tps[i]);
+        idf[i] = self->similarity->idf(self->similarity,
+                                       idf[i], ir->num_docs(ir));
     }
 
-    if (phq->slop == 0) {       /* optimize exact (common) case */
+    if (phw_is_proximity_search(phq)) {
+        phsc = proximity_phrase_scorer_new(self, tps, positions, pos_cnt,
+                                           self->similarity,
+                                           ir_get_norms_i(ir, field_num),
+                                           idf, scoring_function);
+    } else if (phq->slop == 0) {       /* optimize exact (common) case */
         phsc = exact_phrase_scorer_new(self, tps, positions, pos_cnt,
                                        self->similarity,
                                        ir_get_norms_i(ir, field_num));
@@ -584,6 +1438,7 @@ static Scorer *phw_scorer(Weight *self, IndexReader *ir)
                                         self->similarity, phq->slop,
                                         ir_get_norms_i(ir, field_num));
     }
+    free(idf);
     free(tps);
     return phsc;
 }
@@ -615,6 +1470,7 @@ static Explanation *phw_explain(Weight *self, IndexReader *ir, int doc_num)
         return expl_new(0.0, "field \"%s\" does not exist in the index", field);
     }
 
+    scorer = self->scorer(self, ir);
     query_str = self->query->to_s(self->query, NULL);
 
     expl = expl_new(0.0, "weight(%s in %d), product of:", query_str, doc_num);
@@ -625,7 +1481,7 @@ static Explanation *phw_explain(Weight *self, IndexReader *ir, int doc_num)
     for (i = 0; i < phq->pos_cnt; i++) {
         char **terms = phq->positions[i].terms;
         for (j = ary_size(terms) - 1; j >= 0; j--) {
-            len += strlen(terms[j]) + 30;
+            len += strlen(terms[j]) + 40;
         }
     }
     doc_freqs = ALLOC_N(char, len);
@@ -634,11 +1490,14 @@ static Explanation *phw_explain(Weight *self, IndexReader *ir, int doc_num)
         const int t_cnt = ary_size(terms);
         for (j = 0; j < t_cnt; j++) {
             char *term = terms[j];
-            pos += sprintf(doc_freqs + pos, "%s=%d, ",
-                           term, ir->doc_freq(ir, field_num, term));
+            pos += sprintf(doc_freqs + pos, "%s=%d%s, ",
+                           term, ir->doc_freq(ir, field_num, term),
+                           PhSc(scorer)->phrase_pos[i]->stop ? " [stop]" : "");
         }
     }
-    pos -= 2; /* remove ", " from the end */
+    if (phq->pos_cnt > 0) {
+        pos -= 2; /* remove ", " from the end */
+    }
     doc_freqs[pos] = 0;
 
     idf_expl1 = expl_new(self->idf, "idf(%s:<%s>)", field, doc_freqs);
@@ -665,7 +1524,6 @@ static Explanation *phw_explain(Weight *self, IndexReader *ir, int doc_num)
                           query_str, doc_num);
     free(query_str);
 
-    scorer = self->scorer(self, ir);
     tf_expl = scorer->explain(scorer, doc_num);
     scorer->destroy(scorer);
     expl_add_detail(field_expl, tf_expl);
@@ -704,9 +1562,16 @@ static Weight *phw_new(Query *query, Searcher *searcher)
 
     self->similarity    = query->get_similarity(query, searcher);
     self->value         = query->boost;
-    self->idf           = sim_idf_phrase(self->similarity, PhQ(query)->field,
+    if (phw_is_proximity_search(PhQ(query))) {
+        /* per-term idf is moved inside Scorer, so make this idf inert */
+        self->idf       = 1;
+        self->sum_of_squared_weights(self);
+        self->normalize(self, self->qnorm);
+    } else {
+        self->idf       = sim_idf_phrase(self->similarity, PhQ(query)->field,
                                          PhQ(query)->positions,
                                          PhQ(query)->pos_cnt, searcher);
+    }
     return self;
 }
 
@@ -1071,7 +1936,7 @@ static Query *phq_rewrite(Query *self, IndexReader *ir)
 {
     PhraseQuery *phq = PhQ(self);
     (void)ir;
-    if (phq->pos_cnt == 1) {
+    if ((phq->pos_cnt == 1) && !phw_is_proximity_search(phq)) {
         /* optimize one-position case */
         char **terms = phq->positions[0].terms;
         const int t_cnt = ary_size(terms);

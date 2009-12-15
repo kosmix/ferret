@@ -58,124 +58,210 @@ typedef struct DisjunctionSumScorer
     int             min_num_matches;
     Scorer        **sub_scorers;
     int             ss_cnt;
-    PriorityQueue  *scorer_queue;
+    /** current_scorers[0, num_matches) point to scorers at super.doc. */
+    Scorer        **current_scorers;
+    /** current_scorers[0, current_scorers_end) point to scorers with docs. */
+    int             current_scorers_end;
     Coordinator    *coordinator;
 } DisjunctionSumScorer;
 
 static float dssc_score(Scorer *self)
 {
-    return DSSc(self)->cum_score;
+    DisjunctionSumScorer *dssc = DSSc(self);
+    Scorer **current_scorers = dssc->current_scorers;
+
+    assert(dssc->num_matches <= dssc->current_scorers_end);
+    assert(dssc->current_scorers_end <= dssc->ss_cnt);
+    if (dssc->cum_score == 0) {
+        int i;
+        for (i = 0; i < dssc->num_matches; ++i) {
+            dssc->cum_score += current_scorers[i]->score(current_scorers[i]);
+        }
+    }
+    return dssc->cum_score;
 }
 
-static void dssc_init_scorer_queue(DisjunctionSumScorer *dssc)
+static void swap_scorers(Scorer **a, Scorer **b)
+{
+    Scorer *tmp = *a;
+    *a = *b;
+    *b = tmp;
+}
+
+/** Resort current_scorers[0, current_scorers_end) into a valid state.
+ *
+ *  A valid state requires a constructed dssc->current_scorers (as built by
+ *  dssc_init_current_scorers), sorted into two regions such that
+ *    dssc->current_scorers[0, dssc->num_matches)
+ *      consists of all Scorers at self->doc; and
+ *    dssc->current_scorers(dssc->num_matches, dssc->current_scorers_end)
+ *      consists of Scorers at documents greater than self->doc (i.e., at a
+ *      document in the range (self->doc, INT_MAX)).
+ *  (Either/both of the regions can be empty.)
+ *    dssc->current_scorers(dssc->current_scorers_end, dssc->ss_cnt) is unused.
+ *
+ *  Every scorer at a document (i.e., that has not run out of documents) must
+ *  appear in dssc->current_scorers[0, dssc->current_scorers_end).
+ *
+ *  If self->doc != INT_MAX, no scorer in dssc->sub_scorers is at any document
+ *    earlier than self->doc.
+ *  If self->doc == INT_MAX, not enough scorers remain at some document to
+ *    satisfy dssc->min_num_matches.
+ *
+ *  This function assumes that current_scorers[0, current_scorers_end) contains
+ *  the only scorers left with documents available (e.g., after some changes
+ *  to the scorers changed their state).  This function rearranges the array to
+ *  create the two regions and sets dssc->num_matches and self->doc accordingly.
+ */
+static void dssc_sort_current_scorers(DisjunctionSumScorer *dssc)
+{
+    Scorer **current_scorers = dssc->current_scorers;
+    int min_doc = INT_MAX, min_end = 0, i;
+    for (i = 0; i < dssc->current_scorers_end; ++i) {
+        if (current_scorers[i]->doc < min_doc) {
+            min_doc = current_scorers[i]->doc;
+            min_end = 0;
+        }
+        if (current_scorers[i]->doc == min_doc) {
+            assert(min_end < dssc->current_scorers_end);
+            swap_scorers(&current_scorers[min_end], &current_scorers[i]);
+            ++min_end;
+        }
+    }
+    dssc->super.doc = min_doc;
+    dssc->num_matches = min_end;
+    dssc->cum_score = 0;
+    assert(dssc->num_matches <= dssc->current_scorers_end);
+}
+
+/** Allocate and fill dssc->current_scorers (and current_scorers_end). */
+static void dssc_init_current_scorers(DisjunctionSumScorer *dssc)
 {
     int i;
     Scorer *sub_scorer;
-    PriorityQueue *pq = dssc->scorer_queue
-        = pq_new(dssc->ss_cnt, (lt_ft)&scorer_doc_less_than, NULL);
+    dssc->current_scorers = calloc(dssc->ss_cnt, sizeof(Scorer *));
+    dssc->current_scorers_end = 0;
 
     for (i = 0; i < dssc->ss_cnt; i++) {
         sub_scorer = dssc->sub_scorers[i];
+        sub_scorer->state = dssc->super.state;
         if (sub_scorer->next(sub_scorer)) {
-            pq_insert(pq, sub_scorer);
+            dssc->current_scorers[dssc->current_scorers_end] = sub_scorer;
+            ++dssc->current_scorers_end;
         }
     }
+    assert(dssc->current_scorers_end >= 0);
+    assert(dssc->current_scorers_end <= dssc->ss_cnt);
+
+    dssc_sort_current_scorers(dssc);
 }
 
-static bool dssc_advance_after_current(Scorer *self)
+/** Advance current_scorers[0, num_matches) (the ones at self->doc). */
+static void dssc_current_scorers_next(Scorer *self)
 {
     DisjunctionSumScorer *dssc = DSSc(self);
-    PriorityQueue *scorer_queue = dssc->scorer_queue;
+    Scorer **current_scorers = dssc->current_scorers;
+    int i;
 
-    /* repeat until minimum number of matches is found */
-    while (true) {
-        Scorer *top = (Scorer *)pq_top(scorer_queue);
-        self->doc = top->doc;
-        dssc->cum_score = top->score(top);
-        dssc->num_matches = 1;
-        /* Until all sub-scorers are after self->doc */
-        while (true) {
-            if (top->next(top)) {
-                pq_down(scorer_queue);
-            }
-            else {
-                pq_pop(scorer_queue);
-                if (scorer_queue->size
-                    < (dssc->min_num_matches - dssc->num_matches)) {
-                    /* Not enough subscorers left for a match on this
-                     * document, also no more chance of any further match */
-                    return false;
-                }
-                if (scorer_queue->size == 0) {
-                    /* nothing more to advance, check for last match. */
-                    break;
-                }
-            }
-            top = (Scorer *)pq_top(scorer_queue);
-            if (top->doc != self->doc) {
-                /* All remaining subscorers are after self->doc */
-                break;
-            }
-            else {
-                dssc->cum_score += top->score(top);
-                dssc->num_matches++;
-            }
-        }
-
-        if (dssc->num_matches >= dssc->min_num_matches) { 
-            return true;
-        }
-        else if (scorer_queue->size < dssc->min_num_matches) {
-            return false;
+    assert(current_scorers);
+    assert(dssc->num_matches <= dssc->current_scorers_end);
+    assert(dssc->current_scorers_end <= dssc->ss_cnt);
+    i = 0;
+    while (i < dssc->num_matches) {
+        if (current_scorers[i]->next(current_scorers[i])) {
+            ++i;
+        } else {
+            /* Scorer *tmp = current_scorers[i]; */
+            --dssc->num_matches;
+            --dssc->current_scorers_end;
+            current_scorers[i] = current_scorers[dssc->num_matches];
+            current_scorers[dssc->num_matches] =
+                current_scorers[dssc->current_scorers_end];
+            /* This last step completes this swap, but is not necessary: */
+            /* current_scorers[dssc->current_scorers_end] = tmp; */
         }
     }
+    assert(dssc->current_scorers_end >= 0);
+    assert(dssc->current_scorers_end <= dssc->ss_cnt);
+
+    dssc_sort_current_scorers(dssc);
+}
+
+/** Advance scorers as needed until self->doc satisfies min_num_matches. */
+static bool dssc_advance_to_current(Scorer *self)
+{
+    DisjunctionSumScorer *dssc = DSSc(self);
+
+    // while (dssc->num_matches + scorer_queue->size >= dssc->min_num_matches) {
+    while (dssc->current_scorers_end >= dssc->min_num_matches) {
+        if (self->state && self->state->is_aborted &&
+            self->state->is_aborted(self->state->is_aborted_param)) {
+            return false;
+        }
+
+        assert(dssc->num_matches <= dssc->current_scorers_end);
+        assert(dssc->current_scorers_end <= dssc->ss_cnt);
+        if (dssc->num_matches < dssc->min_num_matches) {
+            dssc_current_scorers_next(self);
+        } else {
+            return true;
+        }
+    }
+
+    /* Here, it is impossible to collect dssc->min_num_matches scorers into
+       dssc->current_scorers (i.e., aligned at any self->doc left), because
+       there are too few usable scorers left. */
+    return false;
 }
 
 static bool dssc_next(Scorer *self)
 {
-    if (DSSc(self)->scorer_queue == NULL) {
-        dssc_init_scorer_queue(DSSc(self));
-    }
-
-    if (DSSc(self)->scorer_queue->size < DSSc(self)->min_num_matches) {
-        return false;
+    if (DSSc(self)->current_scorers == NULL) {
+        dssc_init_current_scorers(DSSc(self));
     }
     else {
-        return dssc_advance_after_current(self);
+        dssc_current_scorers_next(self);
     }
+    return dssc_advance_to_current(self);
 }
 
 static bool dssc_skip_to(Scorer *self, int doc_num)
 {
     DisjunctionSumScorer *dssc = DSSc(self);
-    PriorityQueue *scorer_queue = dssc->scorer_queue;
 
-    if (scorer_queue == NULL) {
-        dssc_init_scorer_queue(dssc);
-        scorer_queue = dssc->scorer_queue;
+    if (dssc->current_scorers == NULL) {
+        dssc_init_current_scorers(dssc);
+    }
+    else if (doc_num <= self->doc) {
+        if ((self->doc != INT_MAX) && (self->doc != -1)) {
+            return true;
+        } else {
+            return false;
+        }
     }
 
-    if (scorer_queue->size < dssc->min_num_matches) {
+    if (dssc->current_scorers_end < dssc->min_num_matches) {
+        assert(self->doc == INT_MAX);
         return false;
     }
-    if (doc_num <= self->doc) {
-        doc_num = self->doc + 1;
-    }
-    while (true) { 
-        Scorer *top = (Scorer *)pq_top(scorer_queue);
-        if (top->doc >= doc_num) {
-            return dssc_advance_after_current(self);
-        }
-        else if (top->skip_to(top, doc_num)) {
-            pq_down(scorer_queue);
-        }
-        else {
-            pq_pop(scorer_queue);
-            if (scorer_queue->size < dssc->min_num_matches) {
-                return false;
+    if (doc_num > self->doc) {
+        /* Advance scorers to at least doc_num as needed. */
+        Scorer **current_scorers = dssc->current_scorers;
+        int i = 0;
+        while (i < dssc->current_scorers_end) {
+            if (current_scorers[i]->skip_to(current_scorers[i], doc_num)) {
+                ++i;
+            } else {
+                --dssc->current_scorers_end;
+                /* A swap is not strictly necessary: */
+                current_scorers[i] = current_scorers[dssc->current_scorers_end];
+                /* swap_scorers(&current_scorers[i],
+                    &current_scorers[dssc->current_scorers_end]); */
             }
         }
+        dssc_sort_current_scorers(dssc);
     }
+    return dssc_advance_to_current(self);
 }
 
 static Explanation *dssc_explain(Scorer *self, int doc_num)
@@ -199,9 +285,7 @@ static void dssc_destroy(Scorer *self)
     for (i = 0; i < dssc->ss_cnt; i++) {
         dssc->sub_scorers[i]->destroy(dssc->sub_scorers[i]);
     }
-    if (dssc->scorer_queue) {
-        pq_destroy(dssc->scorer_queue);
-    }
+    free(dssc->current_scorers);
     scorer_destroy_i(self);
 }
 
@@ -216,7 +300,7 @@ static Scorer *disjunction_sum_scorer_new(Scorer **sub_scorers, int ss_cnt,
     DSSc(self)->cum_score = -1.0;
 
     /* The number of subscorers that provide the current match. */
-    DSSc(self)->num_matches = -1;
+    DSSc(self)->num_matches = 0;
     DSSc(self)->coordinator = NULL;
 
 #ifdef DEBUG
@@ -230,9 +314,10 @@ static Scorer *disjunction_sum_scorer_new(Scorer **sub_scorers, int ss_cnt,
     }
 #endif
 
-    DSSc(self)->min_num_matches = min_num_matches;
-    DSSc(self)->sub_scorers     = sub_scorers;
-    DSSc(self)->scorer_queue    = NULL;
+    DSSc(self)->min_num_matches     = min_num_matches;
+    DSSc(self)->sub_scorers         = sub_scorers;
+    DSSc(self)->current_scorers     = NULL;
+    DSSc(self)->current_scorers_end = 0;
 
     self->score   = &dssc_score;
     self->next    = &dssc_next;
@@ -246,7 +331,7 @@ static Scorer *disjunction_sum_scorer_new(Scorer **sub_scorers, int ss_cnt,
 static float cdssc_score(Scorer *self)
 {
     DSSc(self)->coordinator->num_matches += DSSc(self)->num_matches;
-    return DSSc(self)->cum_score;
+    return dssc_score(self);
 }
 
 static Scorer *counting_disjunction_sum_scorer_new(
@@ -312,6 +397,7 @@ static void csc_init(Scorer *self, bool init_scorers)
         /* move each scorer to its first entry */
         for (i = 0; i < sub_sc_cnt; i++) {
             Scorer *sub_scorer = csc->sub_scorers[i];
+            sub_scorer->state = self->state;
             if (!csc->more) {
                 break;
             }
@@ -349,6 +435,11 @@ static bool csc_do_next(Scorer *self)
 
     /* skip to doc with all clauses */
     while (csc->more && (first_sc->doc < last_sc->doc)) {
+        if (self->state && self->state->is_aborted &&
+            self->state->is_aborted(self->state->is_aborted_param))
+        {
+            return false;
+        }
         /* skip first upto last */
         csc->more = first_sc->skip_to(first_sc, last_sc->doc);
         /* move first to last */
@@ -366,6 +457,10 @@ static bool csc_next(Scorer *self)
     ConjunctionScorer *csc = CSc(self);
     if (csc->first_time) {
         csc_init(self, true);
+    }
+    else if (self->state && self->state->is_aborted &&
+             self->state->is_aborted(self->state->is_aborted_param)) {
+        return false;
     }
     else if (csc->more) {
         /* trigger further scanning */
@@ -446,10 +541,10 @@ static float ccsc_score(Scorer *self)
     return csc_score(self);
 }
 
-static Scorer *counting_conjunction_sum_scorer_new(
+static Scorer *counting_conjunction_sum_scorer_new(Similarity *similarity,
     Coordinator *coordinator, Scorer **sub_scorers, int ss_cnt)
 {
-    Scorer *self = conjunction_scorer_new(sim_create_default());
+    Scorer *self = conjunction_scorer_new(similarity);
     ConjunctionScorer *csc = CSc(self);
     csc->coordinator = coordinator;
     csc->last_scored_doc = -1;
@@ -485,6 +580,9 @@ static float smsc_score(Scorer *self)
 static bool smsc_next(Scorer *self)
 {
     Scorer *scorer = SMSc(self)->scorer;
+    if (scorer->state != self->state) {
+        scorer->state = self->state;
+    }
     if (scorer->next(scorer)) {
         self->doc = scorer->doc;
         return true;
@@ -576,6 +674,13 @@ static float rossc_score(Scorer *self)
 static bool rossc_next(Scorer *self)
 {
     Scorer *req_scorer = ROSSc(self)->req_scorer;
+    if (req_scorer->state != self->state) {
+        req_scorer->state = self->state;
+    }
+    Scorer *opt_scorer = ROSSc(self)->opt_scorer;
+    if (opt_scorer && (opt_scorer->state != self->state)) {
+        opt_scorer->state = self->state;
+    }
     if (req_scorer->next(req_scorer)) {
         self->doc = req_scorer->doc;
         return true;
@@ -687,6 +792,8 @@ static bool rxsc_next(Scorer *self)
     Scorer *excl_scorer = rxsc->excl_scorer;
 
     if (rxsc->first_time) {
+        req_scorer->state = self->state;
+        excl_scorer->state = self->state;
         if (! excl_scorer->next(excl_scorer)) {
             /* emptied at start */
             SCORER_NULLIFY(rxsc->excl_scorer);
@@ -695,6 +802,11 @@ static bool rxsc_next(Scorer *self)
         rxsc->first_time = false;
     }
     if (req_scorer == NULL) {
+        return false;
+    }
+    if (self->state && self->state->is_aborted &&
+        self->state->is_aborted(self->state->is_aborted_param))
+    {
         return false;
     }
     if (! req_scorer->next(req_scorer)) {
@@ -956,7 +1068,8 @@ static Scorer *counting_sum_scorer_create(BooleanScorer *bsc)
         /* more required scorers */
         return counting_sum_scorer_create2(
             bsc,
-            counting_conjunction_sum_scorer_new(bsc->coordinator,
+            counting_conjunction_sum_scorer_new(bsc->super.similarity,
+                                                bsc->coordinator,
                                                 bsc->required_scorers,
                                                 bsc->rs_cnt),
             bsc->optional_scorers, bsc->os_cnt);
@@ -966,7 +1079,20 @@ static Scorer *counting_sum_scorer_create(BooleanScorer *bsc)
 static Scorer *bsc_init_counting_sum_scorer(BooleanScorer *bsc)
 {
     coord_init(bsc->coordinator);
-    return bsc->counting_sum_scorer = counting_sum_scorer_create(bsc);
+    int i;
+    for (i = 0; i < bsc->rs_cnt; ++i) {
+        bsc->required_scorers[i]->state = bsc->super.state;
+    }
+    for (i = 0; i < bsc->os_cnt; ++i) {
+        bsc->optional_scorers[i]->state = bsc->super.state;
+    }
+    for (i = 0; i < bsc->ps_cnt; ++i) {
+        bsc->prohibited_scorers[i]->state = bsc->super.state;
+    }
+    Scorer *css = counting_sum_scorer_create(bsc);
+    css->state = bsc->super.state;
+    bsc->counting_sum_scorer = css;
+    return bsc->counting_sum_scorer;
 }
 
 static void bsc_add_scorer(Scorer *self, Scorer *scorer, unsigned int occur) 
@@ -992,6 +1118,9 @@ static void bsc_add_scorer(Scorer *self, Scorer *scorer, unsigned int occur)
         default:
             RAISE(ARG_ERROR, "Invalid value for :occur. Try :should, :must or "
                   ":must_not instead");
+    }
+    if (scorer->state != self->state) {
+        scorer->state = self->state;
     }
 }
 

@@ -589,7 +589,7 @@ static void test_segment_term_doc_enum(TestCase *tc, void *data)
 
         Atrue(! tde->next(tde));
         Atrue(! tde->next(tde));
-        Atrue(! tde->skip_to(tde, 0));
+        Atrue(tde->skip_to(tde, 0));
         Atrue(! tde->skip_to(tde, 1000000));
     }
     tde->close(tde);
@@ -625,7 +625,7 @@ static void test_segment_term_doc_enum(TestCase *tc, void *data)
         }
         Atrue(! tde->next(tde));
         Atrue(! tde->next(tde));
-        Atrue(! tde->skip_to(tde, 0));
+        Atrue(tde->skip_to(tde, 0));
         Atrue(! tde->skip_to(tde, 1000000));
 
     }

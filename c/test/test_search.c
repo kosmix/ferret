@@ -272,7 +272,7 @@ void check_hits(TestCase *tc, Searcher *searcher, Query *query,
     int i, count;
     int total_hits = s2l(expected_hits, num_array);
     TopDocs *top_docs
-        = searcher_search(searcher, query, 0, total_hits + 1, NULL, NULL, NULL);
+        = searcher_search(searcher, NULL, query, 0, total_hits + 1, NULL, NULL, NULL);
     if (!tc->failed && !Aiequal(total_hits, top_docs->total_hits)) {
         int i;
         Tmsg_nf("\texpected;\n\t    ");
@@ -390,17 +390,17 @@ static void test_term_query(TestCase *tc, void *data)
     q_deref(tq);
 
     tq = tq_new(field, "word1");
-    top_docs = searcher_search(searcher, tq, 0, 10, NULL, NULL, NULL);
+    top_docs = searcher_search(searcher, NULL, tq, 0, 10, NULL, NULL, NULL);
     Aiequal(SEARCH_DOCS_SIZE, top_docs->total_hits);
     Aiequal(10, top_docs->size);
     td_destroy(top_docs);
 
-    top_docs = searcher_search(searcher, tq, 0, 20, NULL, NULL, NULL);
+    top_docs = searcher_search(searcher, NULL, tq, 0, 20, NULL, NULL, NULL);
     Aiequal(SEARCH_DOCS_SIZE, top_docs->total_hits);
     Aiequal(SEARCH_DOCS_SIZE, top_docs->size);
     td_destroy(top_docs);
 
-    top_docs = searcher_search(searcher, tq, 10, 20, NULL, NULL, NULL);
+    top_docs = searcher_search(searcher, NULL, tq, 10, 20, NULL, NULL, NULL);
     Aiequal(SEARCH_DOCS_SIZE, top_docs->total_hits);
     Aiequal(SEARCH_DOCS_SIZE - 10, top_docs->size);
     td_destroy(top_docs);

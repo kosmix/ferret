@@ -36,6 +36,7 @@ void store_deref(Store *store)
 {
     mutex_lock(&store->mutex_i);
     if (--store->ref_cnt <= 0) {
+        mutex_unlock(&store->mutex_i);
         store->close_i(store);
     }
     else {

@@ -25,6 +25,11 @@ static float cssc_score(Scorer *self)
 
 static bool cssc_next(Scorer *self)
 {
+    if (self->state && self->state->is_aborted &&
+        self->state->is_aborted(self->state->is_aborted_param))
+    {
+        return false;
+    }
     return ((self->doc = bv_scan_next(CScSc(self)->bv)) >= 0);
 }
 

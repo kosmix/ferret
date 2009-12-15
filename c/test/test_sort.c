@@ -102,7 +102,7 @@ static void do_test_top_docs(TestCase *tc, Searcher *searcher, Query *query,
     static int num_array[ARRAY_SIZE];
     int i;
     int total_hits = s2l(expected_hits, num_array);
-    TopDocs *top_docs = searcher_search(searcher, query, 0,
+    TopDocs *top_docs = searcher_search(searcher, NULL, query, 0,
                                         total_hits, NULL, sort, NULL);
     Aiequal(total_hits, top_docs->total_hits);
     Aiequal(total_hits, top_docs->size);
@@ -136,7 +136,7 @@ static void do_test_top_docs(TestCase *tc, Searcher *searcher, Query *query,
     td_destroy(top_docs);
 
     if (total_hits >= R_END) {
-        top_docs = searcher_search(searcher, query, R_START, R_END - R_START,
+        top_docs = searcher_search(searcher, NULL, query, R_START, R_END - R_START,
                                    NULL, sort, NULL);
         for (i = R_START; i < R_END; i++) {
             Hit *hit = top_docs->hits[i - R_START];

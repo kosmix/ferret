@@ -992,6 +992,12 @@ static Similarity *sea_get_similarity(Searcher *self)
  *
  ***************************************************************************/
 
+static int not_aborted(void *ignored)
+{
+    (void)ignored;
+    return 0;
+}
+
 #define ISEA(searcher) ((IndexSearcher *)(searcher))
 
 int isea_doc_freq(Searcher *self, Symbol field, const char *term)
@@ -1024,7 +1030,15 @@ static int isea_max_doc(Searcher *self)
           post_filter->filter_func(scorer->doc, scorer->score(scorer),\
                                    searcher, post_filter->arg))))
 
+static int reset_doc_flags(QueryState *state)
+{
+    if (state)
+        state->doc_flags = 0;
+    return 1;
+}
+
 static TopDocs *isea_search_w(Searcher *self,
+                              QueryState *state,
                               Weight *weight,
                               int first_doc,
                               int num_docs,
@@ -1036,6 +1050,10 @@ static TopDocs *isea_search_w(Searcher *self,
     int max_size = num_docs + (num_docs == INT_MAX ? 0 : first_doc);
     int i;
     Scorer *scorer;
+    int (*is_aborted)(void*) = (state && state->is_aborted) ?
+        state->is_aborted : &not_aborted;
+    void *is_aborted_param = (state && state->is_aborted) ?
+        state->is_aborted_param : NULL;
     Hit **score_docs = NULL;
     Hit hit;
     int total_hits = 0;
@@ -1055,6 +1073,12 @@ static TopDocs *isea_search_w(Searcher *self,
     if (!scorer || 0 == ISEA(self)->ir->num_docs(ISEA(self)->ir)) {
         if (scorer) scorer->destroy(scorer);
         return td_new(0, 0, NULL, 0.0);
+    }
+    if (state) {
+        /* Add query-execution-specific state information into the top of the
+           scorer hierarchy so that it can deployed into the tree during the
+           first next() call (Scorer's implicit init()). */
+        scorer->state = state;
     }
 
     if (sort) {
@@ -1077,6 +1101,7 @@ static TopDocs *isea_search_w(Searcher *self,
 
     while (scorer->next(scorer)) {
         if (bits && !bv_get(bits, scorer->doc)) continue;
+        reset_doc_flags(state);
         score = scorer->score(scorer);
         if (post_filter &&
             !(filter_factor = post_filter->filter_func(scorer->doc,
@@ -1089,16 +1114,32 @@ static TopDocs *isea_search_w(Searcher *self,
         if (filter_factor < 1.0) score *= filter_factor;
         if (score > max_score) max_score = score;
         hit.doc = scorer->doc; hit.score = score;
+        if (state)
+            hit.flags = state->doc_flags;
         hq_insert(hq, &hit);
     }
     scorer->destroy(scorer);
 
-    if (hq->size > first_doc) {
+    bool aborted = is_aborted(is_aborted_param);
+    /* If the query is aborted, return no results rather than effectively-
+       nonreproducible partial results. */
+    if ((hq->size > first_doc) && !aborted) {
         if ((hq->size - first_doc) < num_docs) {
             num_docs = hq->size - first_doc;
         }
         score_docs = ALLOC_N(Hit *, num_docs);
         for (i = num_docs - 1; i >= 0; i--) {
+            if (is_aborted(is_aborted_param)) {
+                int j;
+                for (j = num_docs - 1; j > i; --j) {
+                    free(score_docs[j]);
+                }
+                free(score_docs);
+                score_docs = NULL;
+                num_docs = 0;
+                aborted = true;
+                break;
+            }
             score_docs[i] = hq_pop(hq);
             /*
             printf("score_docs[i][%d] = [%ld] => %d-->%f\n", i,
@@ -1112,10 +1153,17 @@ static TopDocs *isea_search_w(Searcher *self,
     pq_clear(hq);
     hq_destroy(hq);
 
-    return td_new(total_hits, num_docs, score_docs, max_score);
+    TopDocs *r = NULL;
+    if (aborted) {
+        r = td_new(0, 0, NULL, 0.0);
+    } else {
+        r = td_new(total_hits, num_docs, score_docs, max_score);
+    }
+    return r;
 }
 
 static TopDocs *isea_search(Searcher *self,
+                            QueryState *state,
                             Query *query,
                             int first_doc,
                             int num_docs,
@@ -1126,7 +1174,7 @@ static TopDocs *isea_search(Searcher *self,
 {
     TopDocs *td;
     Weight *weight = q_weight(query, self);
-    td = isea_search_w(self, weight, first_doc, num_docs, filter,
+    td = isea_search_w(self, state, weight, first_doc, num_docs, filter,
                          sort, post_filter, load_fields);
     weight->destroy(weight);
     return td;
@@ -1255,6 +1303,7 @@ static void isea_close(Searcher *self)
     if (ISEA(self)->ir && ISEA(self)->close_ir) {
         ir_close(ISEA(self)->ir);
     }
+    sim_destroy(self->similarity);
     free(self);
 }
 
@@ -1331,19 +1380,21 @@ static Weight *cdfsea_create_weight(Searcher *self, Query *query)
     return NULL;
 }
 
-static TopDocs *cdfsea_search_w(Searcher *self, Weight *w, int fd, int nd,
+static TopDocs *cdfsea_search_w(Searcher *self, QueryState *state,
+                                Weight *w, int fd, int nd,
                                 Filter *f, Sort *s, PostFilter *pf, bool load)
 {
-    (void)self; (void)w; (void)fd; (void)nd;
+    (void)self; (void)state; (void)w; (void)fd; (void)nd;
     (void)f; (void)s; (void)pf; (void)load;
     RAISE(UNSUPPORTED_ERROR, "%s", UNSUPPORTED_ERROR_MSG);
     return NULL;
 }
 
-static TopDocs *cdfsea_search(Searcher *self, Query *q, int fd, int nd,
+static TopDocs *cdfsea_search(Searcher *self, QueryState *state,
+                              Query *q, int fd, int nd,
                               Filter *f, Sort *s, PostFilter *pf, bool load)
 {
-    (void)self; (void)q; (void)fd; (void)nd;
+    (void)self; (void)state; (void)q; (void)fd; (void)nd;
     (void)f; (void)s; (void)pf; (void)load;
     RAISE(UNSUPPORTED_ERROR, "%s", UNSUPPORTED_ERROR_MSG);
     return NULL;
@@ -1404,6 +1455,7 @@ static Similarity *cdfsea_get_similarity(Searcher *self)
 static void cdfsea_close(Searcher *self)
 {
     h_destroy(CDFSEA(self)->df_map);
+    sim_destroy(self->similarity);
     free(self);
 }
 
@@ -1660,6 +1712,7 @@ static void msea_search_i(Searcher *self, int doc_num, float score, void *arg)
 */
 
 static TopDocs *msea_search_w(Searcher *self,
+                              QueryState *state,
                               Weight *weight,
                               int first_doc,
                               int num_docs,
@@ -1672,6 +1725,10 @@ static TopDocs *msea_search_w(Searcher *self,
     int i;
     int total_hits = 0;
     Hit **score_docs = NULL;
+    int (*is_aborted)(void*) = (state && state->is_aborted) ?
+        state->is_aborted : &not_aborted;
+    void *is_aborted_param = (state && state->is_aborted) ?
+        state->is_aborted_param : NULL;
     Hit *(*hq_pop)(PriorityQueue *pq);
     void (*hq_insert)(PriorityQueue *pq, Hit *hit);
     PriorityQueue *hq;
@@ -1694,10 +1751,10 @@ static TopDocs *msea_search_w(Searcher *self,
     /*if (sort) printf("sort = %s\n", sort_to_s(sort)); */
     for (i = 0; i < MSEA(self)->s_cnt; i++) {
         Searcher *s = MSEA(self)->searchers[i];
-        TopDocs *td = s->search_w(s, weight, 0, max_size,
+        TopDocs *td = s->search_w(s, state, weight, 0, max_size,
                                   filter, sort, post_filter, true);
         /*if (sort) printf("sort = %s\n", sort_to_s(sort)); */
-        if (td->size > 0) {
+        if ((td->size > 0) && !is_aborted(is_aborted_param)) {
             /*printf("td->size = %d %d\n", td->size, num_docs); */
             int j;
             int start = MSEA(self)->starts[i];
@@ -1716,12 +1773,26 @@ static TopDocs *msea_search_w(Searcher *self,
         td_destroy(td);
     }
 
-    if (hq->size > first_doc) {
+    bool aborted = is_aborted(is_aborted_param);
+    // If the query is aborted, return no results rather than effectively-
+    // nonreproducible partial results.
+    if ((hq->size > first_doc) && !aborted){
         if ((hq->size - first_doc) < num_docs) {
             num_docs = hq->size - first_doc;
         }
         score_docs = ALLOC_N(Hit *, num_docs);
         for (i = num_docs - 1; i >= 0; i--) {
+            if (is_aborted(is_aborted_param)) {
+                int j;
+                for (j = num_docs - 1; j > i; --j) {
+                    free(score_docs[j]);
+                }
+                free(score_docs);
+                score_docs = NULL;
+                num_docs = 0;
+                aborted = true;
+                break;
+            }
             score_docs[i] = hq_pop(hq);
             /*
             Hit *hit = score_docs[i] = hq_pop(hq);
@@ -1735,10 +1806,17 @@ static TopDocs *msea_search_w(Searcher *self,
     pq_clear(hq);
     pq_destroy(hq);
 
-    return td_new(total_hits, num_docs, score_docs, max_score);
+    TopDocs *r = NULL;
+    if (aborted) {
+        r = td_new(0, 0, NULL, 0.0);
+    } else {
+        r = td_new(total_hits, num_docs, score_docs, max_score);
+    }
+    return r;
 }
 
 static TopDocs *msea_search(Searcher *self,
+                            QueryState *state,
                             Query *query,
                             int first_doc,
                             int num_docs,
@@ -1749,7 +1827,7 @@ static TopDocs *msea_search(Searcher *self,
 {
     TopDocs *td;
     Weight *weight = q_weight(query, self);
-    td = msea_search_w(self, weight, first_doc, num_docs, filter,
+    td = msea_search_w(self, state, weight, first_doc, num_docs, filter,
                        sort, post_filter, load_fields);
     weight->destroy(weight);
     return td;
@@ -1822,6 +1900,7 @@ static void msea_close(Searcher *self)
     }
     free(msea->searchers);
     free(msea->starts);
+    sim_destroy(self->similarity);
     free(self);
 }
 

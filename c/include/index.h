@@ -340,8 +340,11 @@ extern FrtTermEnum *frt_mte_new(FrtMultiReader *mr, int field_num, const char *t
 
 typedef struct FrtTermInfosReader
 {
+#ifdef USE_BUCKET
     frt_thread_key_t thread_te;
     void       **te_bucket;
+    frt_mutex_t      te_bucket_mutex; 
+#endif
     FrtTermEnum     *orig_te;
     int          field_num;
 } FrtTermInfosReader;

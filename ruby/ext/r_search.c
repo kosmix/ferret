@@ -2707,7 +2707,7 @@ frb_sea_search_internal(Query *query, VALUE roptions, Searcher *sea)
         }
     }
 
-    td = sea->search(sea, query, offset, limit, filter, sort, post_filter, 0);
+    td = sea->search(sea, NULL, query, offset, limit, filter, sort, post_filter, 0);
     if (filter) filt_deref(filter);
     return td;
 }

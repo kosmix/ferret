@@ -1,8 +1,10 @@
 #include "index.h"
 #include "symbol.h"
+#include "hash.h"
 #include "similarity.h"
 #include "helper.h"
 #include "array.h"
+#include "threading.h"
 #include <string.h>
 #include <limits.h>
 #include <ctype.h>
@@ -540,6 +542,7 @@ void fis_deref(FieldInfos *fis)
     }
 }
 
+#ifdef USE_BUCKET
 static bool fis_has_vectors(FieldInfos *fis)
 {
     int i;
@@ -552,6 +555,7 @@ static bool fis_has_vectors(FieldInfos *fis)
     }
     return false;
 }
+#endif
 
 /****************************************************************************
  *
@@ -1615,7 +1619,7 @@ Document *fr_get_doc(FieldsReader *fr, int doc_num)
 
 LazyDoc *fr_get_lazy_doc(FieldsReader *fr, int doc_num)
 {
-    int start = 0;
+    off_t start = 0;
     int i, j;
     off_t pos;
     int stored_cnt;
@@ -1634,7 +1638,7 @@ LazyDoc *fr_get_lazy_doc(FieldsReader *fr, int doc_num)
         const int data_cnt = is_read_vint(fdt_in);
         LazyDocField *lazy_df = lazy_df_new(fi->name, data_cnt,
                                             fi_is_compressed(fi));
-        const int field_start = start;
+        const off_t field_start = start;
 
         /* get the starts relative positions this time around */
         for (j = 0; j < data_cnt; j++) {
@@ -1649,7 +1653,7 @@ LazyDoc *fr_get_lazy_doc(FieldsReader *fr, int doc_num)
     for (i = 0; i < stored_cnt; i++) {
         LazyDocField *lazy_df = lazy_doc->fields[i];
         const int data_cnt = lazy_df->size;
-        const int start = is_pos(fdt_in);
+        const off_t start = is_pos(fdt_in);
         for (j = 0; j < data_cnt; j++) {
             lazy_df->data[j].start += start;
         }
@@ -1845,12 +1849,14 @@ static int os_write_zipped_bytes(OutStream* out_stream, uchar *data, int length)
     zstrm.avail_out = ZIP_BUFFER_SIZE;
     zstrm.next_out = out_buffer;
 
-    do {
+    while (zstrm.avail_in > 0) {
+        zstrm.avail_out = ZIP_BUFFER_SIZE;
+        zstrm.next_out = out_buffer;
         ret = deflate(&zstrm, Z_FINISH); /* no bad return value */
         assert(ret != Z_STREAM_ERROR) ;  /* state not clobbered */
         zip_len += buf_size = ZIP_BUFFER_SIZE - zstrm.avail_out;
         os_write_bytes(out_stream, out_buffer, buf_size);
-    } while (zstrm.avail_out == 0);
+    }
     assert(zstrm.avail_in == 0);         /* all input will be used */
 
     /* clean up */
@@ -1873,12 +1879,14 @@ static int os_write_zipped_bytes(OutStream* out_stream, uchar *data, int length)
     zstrm.avail_out = ZIP_BUFFER_SIZE;
     zstrm.next_out = out_buffer;
 
-    do {
+    while (zstrm.avail_in > 0) {
+        zstrm.avail_out = ZIP_BUFFER_SIZE;
+        zstrm.next_out = out_buffer;
         ret = BZ2_bzCompress(&zstrm, BZ_FINISH); /* no bad return value */
         assert(ret != BZ_SEQUENCE_ERROR);        /* state not clobbered */
         zip_len += buf_size = ZIP_BUFFER_SIZE - zstrm.avail_out;
         os_write_bytes(out_stream, (uchar *)out_buffer, buf_size);
-    } while (zstrm.avail_out == 0);
+    }
     assert(zstrm.avail_in == 0);       /* all input will be used */
 
     /* clean up */
@@ -2616,8 +2624,11 @@ TermInfosReader *tir_open(Store *store,
 
     sprintf(file_name, "%s.tis", segment);
     tir->orig_te = ste_new(store->open_input(store, file_name), sfi);
+#ifdef USE_BUCKET
     thread_key_create(&tir->thread_te, NULL);
     tir->te_bucket = ary_new();
+    mutex_init(&tir->te_bucket_mutex, NULL);
+#endif
     tir->field_num = -1;
 
     return tir;
@@ -2626,12 +2637,18 @@ TermInfosReader *tir_open(Store *store,
 static INLINE TermEnum *tir_enum(TermInfosReader *tir)
 {
     TermEnum *te;
+#ifdef USE_BUCKET
     if (NULL == (te = (TermEnum *)thread_getspecific(tir->thread_te))) {
         te = ste_clone(tir->orig_te);
         ste_set_field(te, tir->field_num);
+        mutex_lock(&tir->te_bucket_mutex);
         ary_push(tir->te_bucket, te);
+        mutex_unlock(&tir->te_bucket_mutex);
         thread_setspecific(tir->thread_te, te);
     }
+#else
+    te = tir->orig_te;
+#endif
     return te;
 }
 
@@ -2686,13 +2703,20 @@ char *tir_get_term(TermInfosReader *tir, int pos)
 
 void tir_close(TermInfosReader *tir)
 {
+#ifdef USE_BUCKET
+    mutex_lock(&tir->te_bucket_mutex);
     ary_destroy(tir->te_bucket, (free_ft)&ste_close);
+    mutex_unlock(&tir->te_bucket_mutex);
+    mutex_destroy(&tir->te_bucket_mutex);
+#endif
     ste_close(tir->orig_te);
 
+#ifdef USE_BUCKET
     /* fix for some dodgy old versions of pthread */
     thread_setspecific(tir->thread_te, NULL);
 
     thread_key_delete(tir->thread_te);
+#endif
     free(tir);
 }
 
@@ -3049,11 +3073,11 @@ static bool stde_skip_to(TermDocEnum *tde, int target_doc_num)
     }
 
     /* done skipping, now just scan */
-    do {
+    while ((target_doc_num > stde->doc_num) || (stde->count == 0)) {
         if (!tde->next(tde)) {
             return false;
         }
-    } while (target_doc_num > stde->doc_num);
+    }
     return true;
 }
 
@@ -3611,6 +3635,7 @@ TermDocEnum *mtdpe_new(IndexReader *ir, int field_num, char **terms, int t_cnt)
  ****************************************************************************/
 
 static Hash *fn_extensions = NULL;
+static thread_once_t fn_extensions_once = THREAD_ONCE_INIT;
 static void file_name_filter_init()
 {
     int i;
@@ -3624,7 +3649,8 @@ static void file_name_filter_init()
 bool file_name_filter_is_index_file(const char *file_name, bool include_locks)
 {
     char *p = strrchr(file_name, '.');
-    if (NULL == fn_extensions) file_name_filter_init();
+    thread_once(&fn_extensions_once, &file_name_filter_init);
+    assert(fn_extensions);
     if (NULL != p) {
         char *extension = p + 1;
         if (NULL != h_get(fn_extensions, extension)) {
@@ -4155,6 +4181,7 @@ void ir_close(IndexReader *ir)
         }
         free(ir->fake_norms);
 
+        mutex_unlock(&ir->mutex);
         mutex_destroy(&ir->mutex);
         mutex_destroy(&ir->field_index_mutex);
         free(ir);
@@ -4244,8 +4271,11 @@ typedef struct SegmentReader {
     InStream *prx_in;
     SegmentFieldIndex *sfi;
     TermInfosReader *tir;
+#ifdef USE_BUCKET
     thread_key_t thread_fr;
+    mutex_t fr_bucket_mutex;
     void **fr_bucket;
+#endif
     Hash *norms;
     Store *cfs_store;
     bool deleted_docs_dirty : 1;
@@ -4261,12 +4291,17 @@ typedef struct SegmentReader {
 static INLINE FieldsReader *sr_fr(SegmentReader *sr)
 {
     FieldsReader *fr;
-
+#ifdef USE_BUCKET
     if (NULL == (fr = (FieldsReader *)thread_getspecific(sr->thread_fr))) {
         fr = fr_clone(sr->fr);
+        mutex_lock(&sr->fr_bucket_mutex);
         ary_push(sr->fr_bucket, fr);
+        mutex_unlock(&sr->fr_bucket_mutex);
         thread_setspecific(sr->thread_fr, fr);
     }
+#else
+    fr = sr->fr;
+#endif
     return fr;
 }
 
@@ -4440,11 +4475,17 @@ static void sr_close_i(IndexReader *ir)
     if (sr->norms)        h_destroy(sr->norms);
     if (sr->deleted_docs) bv_destroy(sr->deleted_docs);
     if (sr->cfs_store)    store_deref(sr->cfs_store);
+#ifdef USE_BUCKET
+    mutex_lock(&sr->fr_bucket_mutex);
     if (sr->fr_bucket) {
         thread_setspecific(sr->thread_fr, NULL);
         thread_key_delete(sr->thread_fr);
         ary_destroy(sr->fr_bucket, (free_ft)&fr_close);
+        sr->fr_bucket = NULL;
     }
+    mutex_unlock(&sr->fr_bucket_mutex);
+    mutex_destroy(&sr->fr_bucket_mutex);
+#endif
 }
 
 static int sr_num_docs(IndexReader *ir)
@@ -4659,10 +4700,13 @@ static IndexReader *sr_setup_i(SegmentReader *sr)
         sr->prx_in = store->open_input(store, file_name);
         sr->norms = h_new_int((free_ft)&norm_destroy);
         sr_open_norms(ir, store);
+#ifdef USE_BUCKET
         if (fis_has_vectors(ir->fis)) {
             thread_key_create(&sr->thread_fr, NULL);
             sr->fr_bucket = ary_new();
         }
+        mutex_init(&sr->fr_bucket_mutex, NULL);
+#endif
     XCATCHALL
         ir->sis = NULL;
         ir_close(ir);

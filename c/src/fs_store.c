@@ -471,12 +471,12 @@ Store *open_fs_store(const char *pathname)
 {
     Store *store = NULL;
 
+    mutex_lock(&stores_mutex);
     if (!stores) {
         stores = h_new_str(NULL, (free_ft)fs_destroy);
         register_for_cleanup(stores, (free_ft)h_destroy);
     }
 
-    mutex_lock(&stores_mutex);
     store = (Store *)h_get(stores, pathname);
     if (store) {
         mutex_lock(&store->mutex);

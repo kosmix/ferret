@@ -207,6 +207,7 @@ static Query *get_r_q(QParser *qp, Symbol field, char *from, char *to,
 static void qp_push_fields(QParser *self, HashSet *fields, bool destroy);
 static void qp_pop_fields(QParser *self);
 
+#define INTERNAL_BOOLEAN_DISABLES_COORD false
 /**
  * +FLDS+ calls +func+ for all fields on top of the field stack. +func+
  * must return a query. If there is more than one field on top of FieldStack
@@ -224,7 +225,7 @@ static void qp_pop_fields(QParser *self);
             q = func;\
         } else {\
             Query *volatile sq; HashSetEntry *volatile hse;\
-            q = bq_new_max(false, qp->max_clauses);\
+            q = bq_new_max(INTERNAL_BOOLEAN_DISABLES_COORD, qp->max_clauses);\
             for (hse = qp->fields->first; hse; hse = hse->next) {\
                 field = (Symbol)hse->elem;\
                 sq = func;\
@@ -257,7 +258,7 @@ static void qp_pop_fields(QParser *self);
 
 
 /* Line 216 of yacc.c.  */
-#line 261 "src/q_parser.c"
+#line 262 "src/q_parser.c"
 
 #ifdef short
 # undef short
@@ -560,12 +561,12 @@ static const yytype_int8 yyrhs[] =
 /* YYRLINE[YYN] -- source line where rule number YYN was defined.  */
 static const yytype_uint16 yyrline[] =
 {
-       0,   226,   226,   227,   229,   230,   231,   232,   234,   235,
-     236,   238,   239,   241,   242,   243,   244,   245,   246,   247,
-     249,   250,   251,   253,   255,   255,   257,   257,   257,   260,
-     261,   263,   264,   265,   266,   268,   269,   270,   271,   272,
-     274,   275,   276,   277,   278,   279,   280,   281,   282,   283,
-     284,   285
+       0,   227,   227,   228,   230,   231,   232,   233,   235,   236,
+     237,   239,   240,   242,   243,   244,   245,   246,   247,   248,
+     250,   251,   252,   254,   256,   256,   258,   258,   258,   261,
+     262,   264,   265,   266,   267,   269,   270,   271,   272,   273,
+     275,   276,   277,   278,   279,   280,   281,   282,   283,   284,
+     285,   286
 };
 #endif
 
@@ -1224,59 +1225,59 @@ yydestruct (yymsg, yytype, yyvaluep, qp)
   switch (yytype)
     {
       case 27: /* "bool_q" */
-#line 221 "src/q_parser.y"
+#line 222 "src/q_parser.y"
 	{ if ((yyvaluep->query) && qp->destruct) q_deref((yyvaluep->query)); };
-#line 1230 "src/q_parser.c"
+#line 1231 "src/q_parser.c"
 	break;
       case 28: /* "bool_clss" */
-#line 223 "src/q_parser.y"
+#line 224 "src/q_parser.y"
 	{ if ((yyvaluep->bclss) && qp->destruct) bca_destroy((yyvaluep->bclss)); };
-#line 1235 "src/q_parser.c"
+#line 1236 "src/q_parser.c"
 	break;
       case 29: /* "bool_cls" */
-#line 222 "src/q_parser.y"
+#line 223 "src/q_parser.y"
 	{ if ((yyvaluep->bcls) && qp->destruct) bc_deref((yyvaluep->bcls)); };
-#line 1240 "src/q_parser.c"
+#line 1241 "src/q_parser.c"
 	break;
       case 30: /* "boosted_q" */
-#line 221 "src/q_parser.y"
+#line 222 "src/q_parser.y"
 	{ if ((yyvaluep->query) && qp->destruct) q_deref((yyvaluep->query)); };
-#line 1245 "src/q_parser.c"
+#line 1246 "src/q_parser.c"
 	break;
       case 31: /* "q" */
-#line 221 "src/q_parser.y"
+#line 222 "src/q_parser.y"
 	{ if ((yyvaluep->query) && qp->destruct) q_deref((yyvaluep->query)); };
-#line 1250 "src/q_parser.c"
+#line 1251 "src/q_parser.c"
 	break;
       case 32: /* "term_q" */
-#line 221 "src/q_parser.y"
+#line 222 "src/q_parser.y"
 	{ if ((yyvaluep->query) && qp->destruct) q_deref((yyvaluep->query)); };
-#line 1255 "src/q_parser.c"
+#line 1256 "src/q_parser.c"
 	break;
       case 33: /* "wild_q" */
-#line 221 "src/q_parser.y"
+#line 222 "src/q_parser.y"
 	{ if ((yyvaluep->query) && qp->destruct) q_deref((yyvaluep->query)); };
-#line 1260 "src/q_parser.c"
+#line 1261 "src/q_parser.c"
 	break;
       case 34: /* "field_q" */
-#line 221 "src/q_parser.y"
+#line 222 "src/q_parser.y"
 	{ if ((yyvaluep->query) && qp->destruct) q_deref((yyvaluep->query)); };
-#line 1265 "src/q_parser.c"
+#line 1266 "src/q_parser.c"
 	break;
       case 39: /* "phrase_q" */
-#line 221 "src/q_parser.y"
+#line 222 "src/q_parser.y"
 	{ if ((yyvaluep->query) && qp->destruct) q_deref((yyvaluep->query)); };
-#line 1270 "src/q_parser.c"
+#line 1271 "src/q_parser.c"
 	break;
       case 40: /* "ph_words" */
-#line 224 "src/q_parser.y"
+#line 225 "src/q_parser.y"
 	{ if ((yyvaluep->phrase) && qp->destruct) ph_destroy((yyvaluep->phrase)); };
-#line 1275 "src/q_parser.c"
+#line 1276 "src/q_parser.c"
 	break;
       case 41: /* "range_q" */
-#line 221 "src/q_parser.y"
+#line 222 "src/q_parser.y"
 	{ if ((yyvaluep->query) && qp->destruct) q_deref((yyvaluep->query)); };
-#line 1280 "src/q_parser.c"
+#line 1281 "src/q_parser.c"
 	break;
 
       default:
@@ -1585,228 +1586,228 @@ yyreduce:
   switch (yyn)
     {
         case 2:
-#line 226 "src/q_parser.y"
-    {   qp->result = (yyval.query) = NULL; }
+#line 227 "src/q_parser.y"
+    {   qp->result = (yyval.query) = NULL; ;}
     break;
 
   case 3:
-#line 227 "src/q_parser.y"
-    { T qp->result = (yyval.query) = get_bool_q((yyvsp[(1) - (1)].bclss)); E }
+#line 228 "src/q_parser.y"
+    { T qp->result = (yyval.query) = get_bool_q((yyvsp[(1) - (1)].bclss)); E ;}
     break;
 
   case 4:
-#line 229 "src/q_parser.y"
-    { T (yyval.bclss) = first_cls((yyvsp[(1) - (1)].bcls)); E }
+#line 230 "src/q_parser.y"
+    { T (yyval.bclss) = first_cls((yyvsp[(1) - (1)].bcls)); E ;}
     break;
 
   case 5:
-#line 230 "src/q_parser.y"
-    { T (yyval.bclss) = add_and_cls((yyvsp[(1) - (3)].bclss), (yyvsp[(3) - (3)].bcls)); E }
+#line 231 "src/q_parser.y"
+    { T (yyval.bclss) = add_and_cls((yyvsp[(1) - (3)].bclss), (yyvsp[(3) - (3)].bcls)); E ;}
     break;
 
   case 6:
-#line 231 "src/q_parser.y"
-    { T (yyval.bclss) = add_or_cls((yyvsp[(1) - (3)].bclss), (yyvsp[(3) - (3)].bcls)); E }
+#line 232 "src/q_parser.y"
+    { T (yyval.bclss) = add_or_cls((yyvsp[(1) - (3)].bclss), (yyvsp[(3) - (3)].bcls)); E ;}
     break;
 
   case 7:
-#line 232 "src/q_parser.y"
-    { T (yyval.bclss) = add_default_cls(qp, (yyvsp[(1) - (2)].bclss), (yyvsp[(2) - (2)].bcls)); E }
+#line 233 "src/q_parser.y"
+    { T (yyval.bclss) = add_default_cls(qp, (yyvsp[(1) - (2)].bclss), (yyvsp[(2) - (2)].bcls)); E ;}
     break;
 
   case 8:
-#line 234 "src/q_parser.y"
-    { T (yyval.bcls) = get_bool_cls((yyvsp[(2) - (2)].query), BC_MUST); E }
+#line 235 "src/q_parser.y"
+    { T (yyval.bcls) = get_bool_cls((yyvsp[(2) - (2)].query), BC_MUST); E ;}
     break;
 
   case 9:
-#line 235 "src/q_parser.y"
-    { T (yyval.bcls) = get_bool_cls((yyvsp[(2) - (2)].query), BC_MUST_NOT); E }
+#line 236 "src/q_parser.y"
+    { T (yyval.bcls) = get_bool_cls((yyvsp[(2) - (2)].query), BC_MUST_NOT); E ;}
     break;
 
   case 10:
-#line 236 "src/q_parser.y"
-    { T (yyval.bcls) = get_bool_cls((yyvsp[(1) - (1)].query), BC_SHOULD); E }
+#line 237 "src/q_parser.y"
+    { T (yyval.bcls) = get_bool_cls((yyvsp[(1) - (1)].query), BC_SHOULD); E ;}
     break;
 
   case 12:
-#line 239 "src/q_parser.y"
-    { T if ((yyvsp[(1) - (3)].query)) sscanf((yyvsp[(3) - (3)].str),"%f",&((yyvsp[(1) - (3)].query)->boost));  (yyval.query)=(yyvsp[(1) - (3)].query); E }
+#line 240 "src/q_parser.y"
+    { T if ((yyvsp[(1) - (3)].query)) sscanf((yyvsp[(3) - (3)].str),"%f",&((yyvsp[(1) - (3)].query)->boost));  (yyval.query)=(yyvsp[(1) - (3)].query); E ;}
     break;
 
   case 14:
-#line 242 "src/q_parser.y"
-    { T (yyval.query) = bq_new_max(true, qp->max_clauses); E }
+#line 243 "src/q_parser.y"
+    { T (yyval.query) = bq_new_max(true, qp->max_clauses); E ;}
     break;
 
   case 15:
-#line 243 "src/q_parser.y"
-    { T (yyval.query) = get_bool_q((yyvsp[(2) - (3)].bclss)); E }
+#line 244 "src/q_parser.y"
+    { T (yyval.query) = get_bool_q((yyvsp[(2) - (3)].bclss)); E ;}
     break;
 
   case 20:
-#line 249 "src/q_parser.y"
-    { FLDS((yyval.query), get_term_q(qp, field, (yyvsp[(1) - (1)].str))); Y}
+#line 250 "src/q_parser.y"
+    { FLDS((yyval.query), get_term_q(qp, field, (yyvsp[(1) - (1)].str))); Y;}
     break;
 
   case 21:
-#line 250 "src/q_parser.y"
-    { FLDS((yyval.query), get_fuzzy_q(qp, field, (yyvsp[(1) - (3)].str), (yyvsp[(3) - (3)].str))); Y}
+#line 251 "src/q_parser.y"
+    { FLDS((yyval.query), get_fuzzy_q(qp, field, (yyvsp[(1) - (3)].str), (yyvsp[(3) - (3)].str))); Y;}
     break;
 
   case 22:
-#line 251 "src/q_parser.y"
-    { FLDS((yyval.query), get_fuzzy_q(qp, field, (yyvsp[(1) - (2)].str), NULL)); Y}
+#line 252 "src/q_parser.y"
+    { FLDS((yyval.query), get_fuzzy_q(qp, field, (yyvsp[(1) - (2)].str), NULL)); Y;}
     break;
 
   case 23:
-#line 253 "src/q_parser.y"
-    { FLDS((yyval.query), get_wild_q(qp, field, (yyvsp[(1) - (1)].str))); Y}
+#line 254 "src/q_parser.y"
+    { FLDS((yyval.query), get_wild_q(qp, field, (yyvsp[(1) - (1)].str))); Y;}
     break;
 
   case 24:
-#line 255 "src/q_parser.y"
-    { qp_pop_fields(qp); }
+#line 256 "src/q_parser.y"
+    { qp_pop_fields(qp); ;}
     break;
 
   case 25:
-#line 256 "src/q_parser.y"
-    { (yyval.query) = (yyvsp[(3) - (4)].query); }
+#line 257 "src/q_parser.y"
+    { (yyval.query) = (yyvsp[(3) - (4)].query); ;}
     break;
 
   case 26:
-#line 257 "src/q_parser.y"
-    { qp_push_fields(qp, qp->all_fields, false); }
+#line 258 "src/q_parser.y"
+    { qp_push_fields(qp, qp->all_fields, false); ;}
     break;
 
   case 27:
-#line 257 "src/q_parser.y"
-    { qp_pop_fields(qp); }
+#line 258 "src/q_parser.y"
+    { qp_pop_fields(qp); ;}
     break;
 
   case 28:
-#line 258 "src/q_parser.y"
-    { (yyval.query) = (yyvsp[(4) - (5)].query); }
+#line 259 "src/q_parser.y"
+    { (yyval.query) = (yyvsp[(4) - (5)].query); ;}
     break;
 
   case 29:
-#line 260 "src/q_parser.y"
-    { (yyval.hashset) = first_field(qp, (yyvsp[(1) - (1)].str)); }
+#line 261 "src/q_parser.y"
+    { (yyval.hashset) = first_field(qp, (yyvsp[(1) - (1)].str)); ;}
     break;
 
   case 30:
-#line 261 "src/q_parser.y"
-    { (yyval.hashset) = add_field(qp, (yyvsp[(3) - (3)].str));}
+#line 262 "src/q_parser.y"
+    { (yyval.hashset) = add_field(qp, (yyvsp[(3) - (3)].str));;}
     break;
 
   case 31:
-#line 263 "src/q_parser.y"
-    { (yyval.query) = get_phrase_q(qp, (yyvsp[(2) - (3)].phrase), NULL); }
+#line 264 "src/q_parser.y"
+    { (yyval.query) = get_phrase_q(qp, (yyvsp[(2) - (3)].phrase), NULL); ;}
     break;
 
   case 32:
-#line 264 "src/q_parser.y"
-    { (yyval.query) = get_phrase_q(qp, (yyvsp[(2) - (5)].phrase), (yyvsp[(5) - (5)].str)); }
+#line 265 "src/q_parser.y"
+    { (yyval.query) = get_phrase_q(qp, (yyvsp[(2) - (5)].phrase), (yyvsp[(5) - (5)].str)); ;}
     break;
 
   case 33:
-#line 265 "src/q_parser.y"
-    { (yyval.query) = NULL; }
+#line 266 "src/q_parser.y"
+    { (yyval.query) = NULL; ;}
     break;
 
   case 34:
-#line 266 "src/q_parser.y"
-    { (yyval.query) = NULL; (void)(yyvsp[(4) - (4)].str);}
+#line 267 "src/q_parser.y"
+    { (yyval.query) = NULL; (void)(yyvsp[(4) - (4)].str);;}
     break;
 
   case 35:
-#line 268 "src/q_parser.y"
-    { (yyval.phrase) = ph_first_word((yyvsp[(1) - (1)].str)); }
+#line 269 "src/q_parser.y"
+    { (yyval.phrase) = ph_first_word((yyvsp[(1) - (1)].str)); ;}
     break;
 
   case 36:
-#line 269 "src/q_parser.y"
-    { (yyval.phrase) = ph_first_word(NULL); }
+#line 270 "src/q_parser.y"
+    { (yyval.phrase) = ph_first_word(NULL); ;}
     break;
 
   case 37:
-#line 270 "src/q_parser.y"
-    { (yyval.phrase) = ph_add_word((yyvsp[(1) - (2)].phrase), (yyvsp[(2) - (2)].str)); }
+#line 271 "src/q_parser.y"
+    { (yyval.phrase) = ph_add_word((yyvsp[(1) - (2)].phrase), (yyvsp[(2) - (2)].str)); ;}
     break;
 
   case 38:
-#line 271 "src/q_parser.y"
-    { (yyval.phrase) = ph_add_word((yyvsp[(1) - (3)].phrase), NULL); }
+#line 272 "src/q_parser.y"
+    { (yyval.phrase) = ph_add_word((yyvsp[(1) - (3)].phrase), NULL); ;}
     break;
 
   case 39:
-#line 272 "src/q_parser.y"
-    { (yyval.phrase) = ph_add_multi_word((yyvsp[(1) - (3)].phrase), (yyvsp[(3) - (3)].str));  }
+#line 273 "src/q_parser.y"
+    { (yyval.phrase) = ph_add_multi_word((yyvsp[(1) - (3)].phrase), (yyvsp[(3) - (3)].str));  ;}
     break;
 
   case 40:
-#line 274 "src/q_parser.y"
-    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (4)].str),  (yyvsp[(3) - (4)].str),  true,  true)); Y}
+#line 275 "src/q_parser.y"
+    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (4)].str),  (yyvsp[(3) - (4)].str),  true,  true)); Y;}
     break;
 
   case 41:
-#line 275 "src/q_parser.y"
-    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (4)].str),  (yyvsp[(3) - (4)].str),  true,  false)); Y}
+#line 276 "src/q_parser.y"
+    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (4)].str),  (yyvsp[(3) - (4)].str),  true,  false)); Y;}
     break;
 
   case 42:
-#line 276 "src/q_parser.y"
-    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (4)].str),  (yyvsp[(3) - (4)].str),  false, true)); Y}
+#line 277 "src/q_parser.y"
+    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (4)].str),  (yyvsp[(3) - (4)].str),  false, true)); Y;}
     break;
 
   case 43:
-#line 277 "src/q_parser.y"
-    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (4)].str),  (yyvsp[(3) - (4)].str),  false, false)); Y}
+#line 278 "src/q_parser.y"
+    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (4)].str),  (yyvsp[(3) - (4)].str),  false, false)); Y;}
     break;
 
   case 44:
-#line 278 "src/q_parser.y"
-    { FLDS((yyval.query), get_r_q(qp, field, NULL,(yyvsp[(2) - (3)].str),  false, false)); Y}
+#line 279 "src/q_parser.y"
+    { FLDS((yyval.query), get_r_q(qp, field, NULL,(yyvsp[(2) - (3)].str),  false, false)); Y;}
     break;
 
   case 45:
-#line 279 "src/q_parser.y"
-    { FLDS((yyval.query), get_r_q(qp, field, NULL,(yyvsp[(2) - (3)].str),  false, true)); Y}
+#line 280 "src/q_parser.y"
+    { FLDS((yyval.query), get_r_q(qp, field, NULL,(yyvsp[(2) - (3)].str),  false, true)); Y;}
     break;
 
   case 46:
-#line 280 "src/q_parser.y"
-    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (3)].str),  NULL,true,  false)); Y}
+#line 281 "src/q_parser.y"
+    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (3)].str),  NULL,true,  false)); Y;}
     break;
 
   case 47:
-#line 281 "src/q_parser.y"
-    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (3)].str),  NULL,false, false)); Y}
+#line 282 "src/q_parser.y"
+    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (3)].str),  NULL,false, false)); Y;}
     break;
 
   case 48:
-#line 282 "src/q_parser.y"
-    { FLDS((yyval.query), get_r_q(qp, field, NULL,(yyvsp[(2) - (2)].str),  false, false)); Y}
+#line 283 "src/q_parser.y"
+    { FLDS((yyval.query), get_r_q(qp, field, NULL,(yyvsp[(2) - (2)].str),  false, false)); Y;}
     break;
 
   case 49:
-#line 283 "src/q_parser.y"
-    { FLDS((yyval.query), get_r_q(qp, field, NULL,(yyvsp[(3) - (3)].str),  false, true)); Y}
+#line 284 "src/q_parser.y"
+    { FLDS((yyval.query), get_r_q(qp, field, NULL,(yyvsp[(3) - (3)].str),  false, true)); Y;}
     break;
 
   case 50:
-#line 284 "src/q_parser.y"
-    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(3) - (3)].str),  NULL,true,  false)); Y}
+#line 285 "src/q_parser.y"
+    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(3) - (3)].str),  NULL,true,  false)); Y;}
     break;
 
   case 51:
-#line 285 "src/q_parser.y"
-    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (2)].str),  NULL,false, false)); Y}
+#line 286 "src/q_parser.y"
+    { FLDS((yyval.query), get_r_q(qp, field, (yyvsp[(2) - (2)].str),  NULL,false, false)); Y;}
     break;
 
 
 /* Line 1267 of yacc.c.  */
-#line 1810 "src/q_parser.c"
+#line 1811 "src/q_parser.c"
       default: break;
     }
   YY_SYMBOL_PRINT ("-> $$ =", yyr1[yyn], &yyval, &yyloc);
@@ -2020,7 +2021,7 @@ yyreturn:
 }
 
 
-#line 287 "src/q_parser.y"
+#line 288 "src/q_parser.y"
 
 
 static const char *special_char = "&:()[]{}!\"~^|<>=*?+-";
@@ -2629,6 +2630,90 @@ static Phrase *ph_add_multi_word(Phrase *self, char *word)
 }
 
 /**
+ * Creates a PhraseQuery, and no other type.
+ */
+static Query *get_phrase_query_only(QParser *qp, Symbol field,
+                                    Phrase *phrase, char *slop_str)
+{
+    /** slop if nonnegative, encoding of phrase-scoring flags if negative */
+    int slop = 0;
+    if (slop_str) {
+        switch (slop_str[0]) {
+        case 'p':
+        case 'q':
+            slop = -1;
+            break;
+        case 'r':
+            slop = -2;
+            break;
+        case 's':
+            slop = -3;
+            break;
+        default:
+            sscanf(slop_str,"%d",&slop);
+            break;
+        }
+    }
+
+    int pos_inc = 0;
+    const int pos_cnt = phrase->size;
+    Query *q = phq_new(field);
+    if (slop > 0) {
+        ((PhraseQuery *)q)->slop = slop;
+    }
+
+    int i, j;
+    for (i = 0; i < pos_cnt; i++) {
+        char **words = phrase->positions[i].terms;
+        const int word_count = ary_size(words);
+        if (pos_inc) {
+            ((PhraseQuery *)q)->slop++;
+        }
+        pos_inc += phrase->positions[i].pos + 1; /* Actually holds pos_inc*/
+        
+        if (word_count == 1) {
+            Token *token = NULL;
+            TokenStream *stream = get_cached_ts(qp, field, words[0]);
+            while ((token = ts_next(stream))) {
+                if (token->pos_inc) {
+                    phq_add_term(q, token->text,
+                                 pos_inc ? pos_inc : token->pos_inc);
+                }
+                else {
+                    phq_append_multi_term(q, token->text);
+                    ((PhraseQuery *)q)->slop++;
+                }
+                pos_inc = 0;
+            }
+        }
+        else {
+            bool added_position = false;
+
+            for (j = 0; j < word_count; j++) {
+                Token *token = NULL;
+                TokenStream *stream = get_cached_ts(qp, field, words[j]);
+                if ((token = ts_next(stream))) {
+                    if (!added_position) {
+                        phq_add_term(q, token->text,
+                                     pos_inc ? pos_inc : token->pos_inc);
+                        added_position = true;
+                        pos_inc = 0;
+                    }
+                    else {
+                        phq_append_multi_term(q, token->text);
+                    }
+                }
+            }
+        }
+    }
+
+    if (slop < 0) {
+        ((PhraseQuery *)q)->slop = slop;
+    }
+    return q;
+}
+
+/**
  * Build a phrase query for a single field. It might seem like a better idea
  * to build the PhraseQuery once and duplicate it for each field but this
  * would be buggy in the case of PerFieldAnalyzers in which case a different
@@ -2661,6 +2746,14 @@ static Query *get_phrase_query(QParser *qp, Symbol field,
 {
     const int pos_cnt = phrase->size;
     Query *q = NULL;
+
+    if (slop_str) {
+        switch (slop_str[0]) {
+        case 'p':
+            return get_phrase_query_only(qp, field, phrase, slop_str);
+            break;
+        }
+    }
 
     if (pos_cnt == 1) {
         char **words = phrase->positions[0].terms;
@@ -2707,58 +2800,7 @@ static Query *get_phrase_query(QParser *qp, Symbol field,
         }
     }
     else if (pos_cnt > 1) {
-        Token *token;
-        TokenStream *stream;
-        int i, j;
-        int pos_inc = 0;
-        q = phq_new(field);
-        if (slop_str) {
-            int slop;
-            sscanf(slop_str,"%d",&slop);
-            ((PhraseQuery *)q)->slop = slop;
-        }
-
-        for (i = 0; i < pos_cnt; i++) {
-            char **words = phrase->positions[i].terms;
-            const int word_count = ary_size(words);
-            if (pos_inc) {
-                ((PhraseQuery *)q)->slop++;
-            }
-            pos_inc += phrase->positions[i].pos + 1; /* Actually holds pos_inc*/
-            
-            if (word_count == 1) {
-                stream = get_cached_ts(qp, field, words[0]);
-                while ((token = ts_next(stream))) {
-                    if (token->pos_inc) {
-                        phq_add_term(q, token->text,
-                                     pos_inc ? pos_inc : token->pos_inc);
-                    }
-                    else {
-                        phq_append_multi_term(q, token->text);
-                        ((PhraseQuery *)q)->slop++;
-                    }
-                    pos_inc = 0;
-                }
-            }
-            else {
-                bool added_position = false;
-
-                for (j = 0; j < word_count; j++) {
-                    stream = get_cached_ts(qp, field, words[j]);
-                    if ((token = ts_next(stream))) {
-                        if (!added_position) {
-                            phq_add_term(q, token->text,
-                                         pos_inc ? pos_inc : token->pos_inc);
-                            added_position = true;
-                            pos_inc = 0;
-                        }
-                        else {
-                            phq_append_multi_term(q, token->text);
-                        }
-                    }
-                }
-            }
-        }
+        q = get_phrase_query_only(qp, field, phrase, slop_str);
     }
     return q;
 }

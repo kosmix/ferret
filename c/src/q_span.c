@@ -230,6 +230,10 @@ static bool spansc_next(Scorer *self)
     self->doc = se->doc(se);
 
     do {
+        if (self->state && self->state->is_aborted &&
+            self->state->is_aborted(self->state->is_aborted_param)) {
+            return false;
+        }
         match_length = se->end(se) - se->start(se);
         spansc->freq += sim_sloppy_freq(spansc->sim, match_length);
         spansc->more = se->next(se);

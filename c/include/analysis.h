@@ -9,6 +9,9 @@ extern "C" {
 #include "hash.h"
 #include "symbol.h"
 #include "multimapper.h"
+#ifdef HAVE_KOSMIX_TOKEN
+#include "token/token_c.h"
+#endif
 #include <wchar.h>
 
 /****************************************************************************
@@ -83,6 +86,14 @@ typedef struct FrtStandardTokenizer
     FrtStandardTokenizerType type;
 } FrtStandardTokenizer;
 
+#ifdef HAVE_KOSMIX_TOKEN
+typedef struct FrtKosmixTokenizer
+{
+    FrtCachedTokenStream super;
+    TransformHandle_t transform;
+} FrtKosmixTokenizer;
+#endif
+
 typedef struct FrtLegacyStandardTokenizer
 {
     FrtCachedTokenStream super;
@@ -148,6 +159,10 @@ extern FrtTokenStream *frt_mb_letter_tokenizer_new(bool lowercase);
 extern FrtTokenStream *frt_standard_tokenizer_new();
 extern FrtTokenStream *frt_mb_standard_tokenizer_new();
 extern FrtTokenStream *frt_utf8_standard_tokenizer_new();
+
+#ifdef HAVE_KOSMIX_TOKEN
+extern FrtTokenStream *frt_kosmix_tokenizer_new();
+#endif
 
 extern FrtTokenStream *frt_legacy_standard_tokenizer_new();
 extern FrtTokenStream *frt_mb_legacy_standard_tokenizer_new();
@@ -245,6 +260,10 @@ extern FrtAnalyzer *frt_mb_legacy_standard_analyzer_new_with_words(
     const char **words, bool lowercase);
 extern FrtAnalyzer *frt_mb_legacy_standard_analyzer_new_with_words_len(
     const char **words, int len, bool lowercase);
+
+#ifdef HAVE_KOSMIX_TOKEN
+extern FrtAnalyzer *frt_kosmix_analyzer_new(TransformHandle_t transform);
+#endif
 
 #define PFA(analyzer) ((FrtPerFieldAnalyzer *)(analyzer))
 typedef struct FrtPerFieldAnalyzer

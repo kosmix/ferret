@@ -2,6 +2,7 @@
 #include "search.h"
 #include "helper.h"
 #include "symbol.h"
+#include "boosted_term.h"
 #include "internal.h"
 
 #define MTQ(query) ((MultiTermQuery *)(query))
@@ -16,11 +17,7 @@
  * BoostedTerm
  ***************************************************************************/
 
-typedef struct BoostedTerm
-{
-    char *term;
-    float boost;
-} BoostedTerm;
+// For the typedef, see boosted_term.h.
 
 static bool boosted_term_less_than(const BoostedTerm *bt1,
                                   const BoostedTerm *bt2)
@@ -184,6 +181,11 @@ static bool multi_tsc_next(Scorer *self)
     }
 
     self->doc = curr_doc = tdew->doc;
+    if (self->state && self->state->is_aborted &&
+        self->state->is_aborted(self->state->is_aborted_param))
+    {
+        return false;
+    }
     do {
         int freq = tdew->freq;
         if (freq < SCORE_CACHE_SIZE) {
@@ -412,7 +414,9 @@ static Explanation *multi_tw_explain(Weight *self, IndexReader *ir, int doc_num)
         pos += sprintf(doc_freqs + pos, "(%s=%d) + ", term, doc_freq);
         total_doc_freqs += doc_freq;
     }
-    pos -= 2; /* remove " + " from the end */
+    if (bt_pq->size > 0) {
+        pos -= 2; /* remove " + " from the end */
+    }
     sprintf(doc_freqs + pos, "= %d", total_doc_freqs);
 
     idf_expl1 = expl_new(self->idf, "idf(%s:<%s>)", field, doc_freqs);
@@ -474,8 +478,6 @@ static Explanation *multi_tw_explain(Weight *self, IndexReader *ir, int doc_num)
 
 static Weight *multi_tw_new(Query *query, Searcher *searcher)
 {
-    int i;
-    int doc_freq         = 0;
     Weight *self         = w_new(Weight, query);
     PriorityQueue *bt_pq = MTQ(query)->boosted_terms;
 
@@ -485,14 +487,9 @@ static Weight *multi_tw_new(Query *query, Searcher *searcher)
 
     self->similarity     = query->get_similarity(query, searcher);
     self->value          = query->boost;
-    self->idf            = 0.0;
-
-    for (i = bt_pq->size; i > 0; i--) {
-        doc_freq += searcher->doc_freq(searcher, MTQ(query)->field,
-                                       ((BoostedTerm *)bt_pq->heap[i])->term);
-    }
-    self->idf += sim_idf(self->similarity, doc_freq,
-                         searcher->max_doc(searcher));
+    self->idf            = sim_idf_multiterm(self->similarity,
+                                             MTQ(query)->field,
+                                             bt_pq, searcher);
 
     return self;
 }
