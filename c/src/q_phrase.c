@@ -929,7 +929,7 @@ static const float base_tf_score = 0.1, tf_scale = 10;
     in the sum-of-idfs formula.
 
     Note that this function defines local position variables that represent
-    *real* positions, not the fake (position-offset) misnomers used in
+    *real* positions, not the (real-position-minus-term-offset) values used in
     original Ferret code.  The ordering of the words in the query are ignored,
     so the sliding window walk is sorted by true position for all query terms.
 
@@ -1016,6 +1016,34 @@ static void pphsc_textscore_tf(Scorer *self, Explanation *explanation)
     }
 
     int pp_left = pp_in_doc;
+    if (pp_left == 1) {
+        /* Short-circuit enumeration of all occurrences of a single word. */
+        PhPos *ppj = phrase_positions[0];
+        if (phsc->score_stopwords || !ppj->stop) {
+            ppj->score[0] = ppj->count;
+
+            if (explanation) {
+                const int term_pos = ppj->position + ppj->offset;
+                Explanation *w = expl_new(1.0,
+                    "text includes single term [%d] %d times",
+                     term_pos, ppj->count);
+
+                const size_t offset = phsc->pp_cnt * ppj->id + i;
+                expl_add_detail(window_explanations[offset], w);
+            }
+
+            /* check whether a full phrase match occurred */
+            if ((phsc->pp_cnt == 1) && phsc->set_phrase_match_flag &&
+                 self->state)
+            {
+                self->state->doc_flags |= FRT_QUERYSTATE_PHRASE_MATCH;
+            }
+            if (phsc->set_phrase_match_title_keywords_flag && self->state) {
+                self->state->doc_flags |=
+                    FRT_QUERYSTATE_PHRASE_MATCH_TITLE_KEYWORDS;
+            }
+        }
+    } else /* run full while loop, the usual case */
     while (phrase_positions[0]->count) {
         PhPos *pp = phrase_positions[0];
         const int start_pos = pp->position + pp->offset;
