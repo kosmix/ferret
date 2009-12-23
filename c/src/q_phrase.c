@@ -1043,98 +1043,101 @@ static void pphsc_textscore_tf(Scorer *self, Explanation *explanation)
                     FRT_QUERYSTATE_PHRASE_MATCH_TITLE_KEYWORDS;
             }
         }
-    } else /* run full while loop, the usual case */
-    while (phrase_positions[0]->count) {
-        PhPos *pp = phrase_positions[0];
-        const int start_pos = pp->position + pp->offset;
-        int window_size = window_size_base;
-        /** Is the match so far [start_pos, ppi] a prefix of the query terms
-         *  in query order? */
-        bool phrase_prefix = true;
-        for (i = 0; i < pp_left; ++i) {
-            PhPos *ppi = phrase_positions[i];
-            if (ppi->count == 0) {
-                int j;
-                for (j = i; j < pp_in_doc; ++j) {
-                    assert((phrase_positions[j]->count == 0) &&
-                        "phrase_positions ordering must leave terms with "
-                        "no occurrences left at end of array");
-                    assert((phrase_positions[j]->position == -1) &&
-                        "phrase_positions ordering must leave terms with "
-                        "no occurrences left at end of array");
-                }
-                pp_left = i;
-                break;
-            } else {
-                assert(ppi->tpe != NULL);
-                assert(ppi->position + ppi->offset >= start_pos);
-            }
-
-            /* Check whether term i is consistent with a phrase match. */
-            const int pos = ppi->position + ppi->offset;
-            if ((ppi->id != i) || (pos != start_pos + i)) {
-                phrase_prefix = false;
-            }
-
-            /* If ordering is broken, stop checking for longer text windows.
-               @todo TODO Another version could step over out-of-order terms
-               as if the out-of-order term were not a match. */
-            if (phsc->ordered_proximity) {
-                const int last_offset = i ? phrase_positions[i-1]->offset :
-                    pp->offset; 
-                if (ppi->offset < last_offset)
-                    break;
-            }
-
-            /* PhPos.position is a position-offset value, not a position,
-               so window_size needs to be adjusted by the sums of the offsets
-               for any text-window-size check to work. */
-            window_size += window_size_per_term;
-            assert((i == 0) || (pos > start_pos));
-            if (pos - start_pos + 1 <= window_size) {
-                int j = 0;
-                for (j = 0; j <= i; ++j) {
-                    /* just accumulate tf component now */
-                    /* idf multiply happens in pphsc_score */
-                    if (phsc->score_stopwords || !ppi->stop) {
-                        ++phrase_positions[j]->score[i];
+    } else {
+        /* Enumerate occurrences to find proximity windows with query terms. */
+        while (phrase_positions[0]->count) {
+            PhPos *pp = phrase_positions[0];
+            const int start_pos = pp->position + pp->offset;
+            int window_size = window_size_base;
+            /** Is the match so far [start_pos, ppi] a prefix of the query
+             *  terms in query order? */
+            bool phrase_prefix = true;
+            for (i = 0; i < pp_left; ++i) {
+                PhPos *ppi = phrase_positions[i];
+                if (ppi->count == 0) {
+                    int j;
+                    for (j = i; j < pp_in_doc; ++j) {
+                        assert((phrase_positions[j]->count == 0) &&
+                            "phrase_positions ordering must leave terms with "
+                            "no occurrences left at end of array");
+                        assert((phrase_positions[j]->position == -1) &&
+                            "phrase_positions ordering must leave terms with "
+                            "no occurrences left at end of array");
                     }
+                    pp_left = i;
+                    break;
+                } else {
+                    assert(ppi->tpe != NULL);
+                    assert(ppi->position + ppi->offset >= start_pos);
                 }
-                if (explanation) {
+    
+                /* Check whether term i is consistent with a phrase match. */
+                const int pos = ppi->position + ppi->offset;
+                if ((ppi->id != i) || (pos != start_pos + i)) {
+                    phrase_prefix = false;
+                }
+    
+                /* If term ordering is required but broken, stop checking for
+                   longer text windows.
+                   @todo TODO Another version of this behavior could step over
+                   out-of-order terms as if they were not a match. */
+                if (phsc->ordered_proximity) {
+                    const int last_offset = i ? phrase_positions[i-1]->offset :
+                        pp->offset; 
+                    if (ppi->offset < last_offset)
+                        break;
+                }
+    
+                window_size += window_size_per_term;
+                assert((i == 0) || (pos > start_pos));
+                if (pos - start_pos + 1 <= window_size) {
+                    int j = 0;
                     for (j = 0; j <= i; ++j) {
-                        PhPos *ppj = phrase_positions[j];
+                        /* just accumulate tf component now */
+                        /* idf multiply happens in pphsc_score */
                         if (phsc->score_stopwords || !ppi->stop) {
-                            const int term_pos = ppj->position + ppj->offset;
-                            Explanation *w = expl_new(1.0,
-                                "text window [%d, %d] (size %d <= %d) "
-                                "includes [%d]",
-                                start_pos, pos,
-                                pos - start_pos + 1, window_size,
-                                term_pos);
-
-                            const size_t offset = phsc->pp_cnt * ppj->id + i;
-                            expl_add_detail(window_explanations[offset], w);
+                            ++phrase_positions[j]->score[i];
+                        }
+                    }
+                    if (explanation) {
+                        for (j = 0; j <= i; ++j) {
+                            PhPos *ppj = phrase_positions[j];
+                            if (phsc->score_stopwords || !ppi->stop) {
+                                const int term_pos = ppj->position +
+                                    ppj->offset;
+                                Explanation *w = expl_new(1.0,
+                                    "text window [%d, %d] (size %d <= %d) "
+                                    "includes [%d]",
+                                    start_pos, pos,
+                                    pos - start_pos + 1, window_size,
+                                    term_pos);
+    
+                                const size_t offset = phsc->pp_cnt * ppj->id +
+                                    i;
+                                expl_add_detail(window_explanations[offset], w);
+                            }
                         }
                     }
                 }
             }
-        }
-        /* check whether a full phrase match occurred */
-        if (phrase_prefix && (i == phsc->pp_cnt)) {
-            if (phsc->set_phrase_match_flag && self->state) {
-                self->state->doc_flags |= FRT_QUERYSTATE_PHRASE_MATCH;
+            /* check whether a full phrase match occurred */
+            if (phrase_prefix && (i == phsc->pp_cnt)) {
+                if (phsc->set_phrase_match_flag && self->state) {
+                    self->state->doc_flags |= FRT_QUERYSTATE_PHRASE_MATCH;
+                }
+                if (phsc->set_phrase_match_title_keywords_flag && self->state) {
+                    self->state->doc_flags |=
+                        FRT_QUERYSTATE_PHRASE_MATCH_TITLE_KEYWORDS;
+                }
             }
-            if (phsc->set_phrase_match_title_keywords_flag && self->state) {
-                self->state->doc_flags |=
-                    FRT_QUERYSTATE_PHRASE_MATCH_TITLE_KEYWORDS;
+    
+            assert(pp->count > 0);
+            if (pp_next_position(pp) && check_repeats) {
+                pphsc_check_repeats(pp, phsc->phrase_pos, pp_left);
             }
+            qsort(phrase_positions, pp_left, sizeof(PhPos *),
+                &pp_pos_or_end_cmp);
         }
-
-        assert(pp->count > 0);
-        if (pp_next_position(pp) && check_repeats) {
-            pphsc_check_repeats(pp, phsc->phrase_pos, pp_left);
-        }
-        qsort(phrase_positions, pp_left, sizeof(PhPos *), &pp_pos_or_end_cmp);
     }
 
     /* Normalize [Similarity.tf], scale [tf_scale] tf values as appropriate. */
