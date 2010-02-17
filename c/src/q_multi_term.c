@@ -91,12 +91,13 @@ static bool tdew_skip_to(TermDocEnumWrapper *self, int doc_num)
 {
     TermDocEnum *tde = self->tde;
 
-    while (++(self->pointer) < self->pointer_max) {
+    while (self->pointer < self->pointer_max) {
         if (self->docs[self->pointer] >= doc_num) {
             self->doc = self->docs[self->pointer];
             self->freq = self->freqs[self->pointer];
             return true;
         }
+        ++(self->pointer);
     }
 
     /* not found in cache, seek underlying stream */
@@ -241,6 +242,9 @@ static bool multi_tsc_advance_to(Scorer *self, int target_doc_num)
 
 static INLINE bool multi_tsc_skip_to(Scorer *self, int target_doc_num)
 {
+    if (self->doc >= target_doc_num)
+        return true;
+
     return multi_tsc_advance_to(self, target_doc_num) && multi_tsc_next(self);
 }
 

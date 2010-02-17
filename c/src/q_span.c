@@ -247,6 +247,10 @@ static bool spansc_skip_to(Scorer *self, int target)
     SpanScorer *spansc = SpSc(self);
     SpanEnum *se = spansc->spans;
 
+    if (self->doc >= target) {
+        return true;
+    }
+
     spansc->more = se->skip_to(se, target);
     if (!spansc->more) {
         return false;
@@ -357,13 +361,9 @@ static bool spante_skip_to(SpanEnum *self, int target)
     SpanTermEnum *ste = SpTEn(self);
     TermDocEnum *tde = ste->positions;
 
-    /* are we already at the correct position? */
-    /* FIXME: perhaps this the the better solution but currently it ->skip_to
-     * does a ->next not matter what
     if (ste->doc >= target) {
         return true;
     }
-    */
 
     if (! tde->skip_to(tde, target)) {
         ste->doc = INT_MAX;
@@ -486,6 +486,9 @@ static bool tpew_next(TermPosEnumWrapper *self)
 static bool tpew_skip_to(TermPosEnumWrapper *self, int doc_num)
 {
     TermDocEnum *tpe = self->tpe;
+    if (self->doc >= doc_num) {
+        return true;
+    }
 
     if (tpe->skip_to(tpe, doc_num)) {
         self->doc = tpe->doc_num(tpe);
@@ -581,6 +584,9 @@ static bool spanmte_skip_to(SpanEnum *self, int target)
     if (tpew_pq->size == 0) {
         mte->doc = -1;
         return false;
+    }
+    if (self->doc(self) >= target) {
+        return true;
     }
     while ((tpew = (TermPosEnumWrapper *)pq_top(tpew_pq)) != NULL
            && (target > tpew->doc)) {
@@ -683,6 +689,10 @@ static bool spanfe_skip_to(SpanEnum *self, int target)
 {
     SpanEnum *sub_enum = SpFEn(self)->sub_enum;
     int end = SpFQ(self->query)->end;
+
+    if (sub_enum->doc(sub_enum) >= target) {
+        return true;
+    }
 
     if (! sub_enum->skip_to(sub_enum, target)) {
         return false;
@@ -1154,6 +1164,10 @@ static bool spanne_next(SpanEnum *self)
 
 static bool spanne_skip_to(SpanEnum *self, int target)
 {
+    if (self->doc(self) >= target) {
+        return true;
+    }
+
     SpanEnum *se = SpNEn(self)->span_enums[SpNEn(self)->current];
     if (!se->skip_to(se, target)) {
         return false;
@@ -1299,6 +1313,10 @@ static bool spanxe_skip_to(SpanEnum *self, int target)
     SpanNotEnum *sxe = SpXEn(self);
     SpanEnum *inc = sxe->inc, *exc = sxe->exc;
     int doc;
+
+    if (self->doc(self) >= target) {
+        return true;
+    }
 
     if (sxe->more_inc) {                        /*  move to next incl */
         if (!(sxe->more_inc=sxe->inc->skip_to(sxe->inc, target))) return false;

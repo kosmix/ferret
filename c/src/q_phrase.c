@@ -1638,7 +1638,7 @@ static int tvpe_skip_to(TVPosEnum *self, int position)
 {
     int i;
     int search_pos = position + self->offset;
-    for (i = self->index + 1; i < self->size; i++) {
+    for (i = self->index; i < self->size; i++) {
         if (self->positions[i] >= search_pos) {
             self->pos = self->positions[i] - self->offset;
             break;

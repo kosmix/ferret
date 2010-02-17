@@ -79,11 +79,12 @@ static bool tsc_skip_to(Scorer *self, int doc_num)
     TermDocEnum *tde = ts->tde;
 
     /* first scan in cache */
-    while (++(ts->pointer) < ts->pointer_max) {
+    while (ts->pointer < ts->pointer_max) {
         if (ts->docs[ts->pointer] >= doc_num) {
             self->doc = ts->docs[ts->pointer];
             return true;
         }
+        ++(ts->pointer);
     }
 
     /* not found in cache, seek underlying stream */

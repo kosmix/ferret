@@ -3559,6 +3559,10 @@ static bool mtdpe_skip_to(TermDocEnum *tde, int target_doc_num)
     TermDocEnum *sub_tde;
     PriorityQueue *mtdpe_pq = MTDPE(tde)->pq;
 
+    if (tde->doc_num(tde) >= target_doc_num) {
+        return true;
+    }
+
     while (NULL != (sub_tde = (TermDocEnum *)pq_top(mtdpe_pq))
            && (target_doc_num > sub_tde->doc_num(sub_tde))) {
         if (sub_tde->skip_to(sub_tde, target_doc_num)) {
