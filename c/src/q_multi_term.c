@@ -242,9 +242,6 @@ static bool multi_tsc_advance_to(Scorer *self, int target_doc_num)
 
 static INLINE bool multi_tsc_skip_to(Scorer *self, int target_doc_num)
 {
-    if (self->doc >= target_doc_num)
-        return true;
-
     return multi_tsc_advance_to(self, target_doc_num) && multi_tsc_next(self);
 }
 

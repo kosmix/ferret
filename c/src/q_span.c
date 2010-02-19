@@ -247,7 +247,7 @@ static bool spansc_skip_to(Scorer *self, int target)
     SpanScorer *spansc = SpSc(self);
     SpanEnum *se = spansc->spans;
 
-    if (self->doc >= target) {
+    if ((self->doc >= target) && (spansc->first_time == false)) {
         return true;
     }
 
@@ -361,6 +361,8 @@ static bool spante_skip_to(SpanEnum *self, int target)
     SpanTermEnum *ste = SpTEn(self);
     TermDocEnum *tde = ste->positions;
 
+    // If self has never been next'd or skip_to'd before, ste->doc == -1 < 0,
+    // so (ste->doc >= target) == false (since target >= 0).
     if (ste->doc >= target) {
         return true;
     }
@@ -486,6 +488,8 @@ static bool tpew_next(TermPosEnumWrapper *self)
 static bool tpew_skip_to(TermPosEnumWrapper *self, int doc_num)
 {
     TermDocEnum *tpe = self->tpe;
+    // If self has never been next'd or skip_to'd before, self->doc == -1 < 0,
+    // so (self->doc >= doc_num) == false (since doc_num >= 0).
     if (self->doc >= doc_num) {
         return true;
     }
@@ -580,13 +584,12 @@ static bool spanmte_skip_to(SpanEnum *self, int target)
             pq_push(tpew_pq, tpews[i]);
         }
         mte->tpew_pq = tpew_pq;
+    } else if (self->doc(self) >= target) {
+        return true;
     }
     if (tpew_pq->size == 0) {
         mte->doc = -1;
         return false;
-    }
-    if (self->doc(self) >= target) {
-        return true;
     }
     while ((tpew = (TermPosEnumWrapper *)pq_top(tpew_pq)) != NULL
            && (target > tpew->doc)) {
@@ -670,6 +673,7 @@ typedef struct SpanFirstEnum
 {
     SpanEnum    super;
     SpanEnum   *sub_enum;
+    bool        first_time : 1;
 } SpanFirstEnum;
 
 
@@ -677,6 +681,9 @@ static bool spanfe_next(SpanEnum *self)
 {
     SpanEnum *sub_enum = SpFEn(self)->sub_enum;
     int end = SpFQ(self->query)->end;
+    if (SpFEn(self)->first_time) {
+        SpFEn(self)->first_time = false;
+    }
     while (sub_enum->next(sub_enum)) { /* scan to next match */
         if (sub_enum->end(sub_enum) <= end) {
             return true;
@@ -690,8 +697,11 @@ static bool spanfe_skip_to(SpanEnum *self, int target)
     SpanEnum *sub_enum = SpFEn(self)->sub_enum;
     int end = SpFQ(self->query)->end;
 
-    if (sub_enum->doc(sub_enum) >= target) {
+    if ((sub_enum->doc(sub_enum) >= target) && (SpFEn(self)->first_time == false)) {
         return true;
+    }
+    if (SpFEn(self)->first_time) {
+        SpFEn(self)->first_time = false;
     }
 
     if (! sub_enum->skip_to(sub_enum, target)) {
@@ -744,6 +754,7 @@ static SpanEnum *spanfe_new(Query *query, IndexReader *ir)
     SpanFirstQuery *sfq     = SpFQ(query);
 
     SpFEn(self)->sub_enum   = SpQ(sfq->match)->get_spans(sfq->match, ir);
+    SpFEn(self)->first_time = true;
 
     self->query     = query;
     self->next      = &spanfe_next;
@@ -1164,7 +1175,7 @@ static bool spanne_next(SpanEnum *self)
 
 static bool spanne_skip_to(SpanEnum *self, int target)
 {
-    if (self->doc(self) >= target) {
+    if ((self->doc(self) >= target) && (!SpNEn(self)->first_time)) {
         return true;
     }
 
@@ -1275,6 +1286,7 @@ typedef struct SpanNotEnum
     SpanEnum   *exc;
     bool        more_inc : 1;
     bool        more_exc : 1;
+    bool        first_time : 1;
 } SpanNotEnum;
 
 
@@ -1282,6 +1294,9 @@ static bool spanxe_next(SpanEnum *self)
 {
     SpanNotEnum *sxe = SpXEn(self);
     SpanEnum *inc = sxe->inc, *exc = sxe->exc;
+    if (sxe->first_time) {
+        sxe->first_time = false;
+    }
     if (sxe->more_inc) {                        /*  move to next incl */
         sxe->more_inc = inc->next(inc);
     }
@@ -1314,8 +1329,11 @@ static bool spanxe_skip_to(SpanEnum *self, int target)
     SpanEnum *inc = sxe->inc, *exc = sxe->exc;
     int doc;
 
-    if (self->doc(self) >= target) {
+    if ((self->doc(self) >= target) && (sxe->first_time == false)) {
         return true;
+    }
+    if (sxe->first_time) {
+        sxe->first_time = false;
     }
 
     if (sxe->more_inc) {                        /*  move to next incl */
@@ -1385,6 +1403,7 @@ static SpanEnum *spanxe_new(Query *query, IndexReader *ir)
     sxe->exc            = SpQ(sxq->exc)->get_spans(sxq->exc, ir);
     sxe->more_inc       = true;
     sxe->more_exc       = sxe->exc->next(sxe->exc);
+    sxe->first_time     = true;
 
     self->query         = query;
     self->next          = &spanxe_next;
